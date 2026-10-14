@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    // The tests are Node's (`node:test`, `node:assert`) with happy-dom registered as the page.
+    // `skipLibCheck` above lets Node's globals sit beside the DOM lib.
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}

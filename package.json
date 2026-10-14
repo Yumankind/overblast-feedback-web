@@ -1,0 +1,68 @@
+{
+  "name": "@overblast/feedback",
+  "version": "0.1.0",
+  "description": "A feedback button, shortcut and shake for any website: the person says what is wrong, points at it, and the report lands in your Overblast workspace as a task with the element, the logs and the device.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/overblast-feedback.global.js",
+  "jsdelivr": "./dist/overblast-feedback.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./global": "./dist/overblast-feedback.global.js",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "./dist/global.js",
+    "./dist/overblast-feedback.global.js"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/fix-dts.mjs && node scripts/build-global.mjs",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "test": "node --test test/*.test.ts",
+    "prepublishOnly": "pnpm run typecheck && pnpm test && pnpm run build",
+    "mirror": "bash scripts/mirror.sh",
+    "publish:npm": "npm publish --access public"
+  },
+  "keywords": [
+    "feedback",
+    "bug-report",
+    "screenshot",
+    "shake-to-report",
+    "element-picker",
+    "overblast",
+    "browser"
+  ],
+  "homepage": "https://github.com/Yumankind/overblast-feedback-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yumankind/overblast-feedback-web.git"
+  },
+  "bugs": {
+    "email": "support@yumankind.com",
+    "url": "https://github.com/Yumankind/overblast-feedback-web/issues"
+  },
+  "author": "Bruno Silva (https://overblast.app)",
+  "license": "MIT",
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^21.0.1",
+    "@types/node": "^25.5.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    // A BROWSER LIBRARY THAT ALSO RUNS UNDER `node --test`. The DOM lib types `document`, `fetch`,
+    // `XMLHttpRequest` and `DeviceMotionEvent`, and `types: []` keeps Node's globals OUT of `src/`:
+    // a source file that could see `process` is a source file that will eventually use it, and this
+    // package ships to a page.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "src",
+
+    // Imports are written with a `.ts` extension, so `node --test test/*.test.ts` resolves them as
+    // they stand under Node's own type stripping, and `rewriteRelativeImportExtensions` turns them
+    // into `.js` on the way into `dist/`. `scripts/fix-dts.mjs` does the same for the declarations,
+    // which the compiler leaves alone.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    // Node strips types, it does not EXECUTE them: no enums, no namespaces, no parameter
+    // properties. This flag makes the compiler refuse that syntax here.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

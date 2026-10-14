@@ -1,0 +1,7 @@
+# Marks this folder as its own pnpm root, as every package in this repository is, so a pnpm command
+# run here never climbs to a parent and treats the repository as one workspace. It travels to the
+# public mirror with the rest of the folder, where it is the root.
+#
+# esbuild ships its binary through a postinstall step; it builds the single-file script-tag bundle.
+allowBuilds:
+  esbuild: true
