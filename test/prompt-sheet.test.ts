@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { $, page } from './dom.ts';
 import { init } from '../src/index.ts';
 import { appUrlMatcher } from '../src/feedback.ts';
+import { keyboardUp } from '../src/prompt.ts';
 import type { FeedbackBody, FeedbackInstance, InitOptions } from '../src/types.ts';
 import { Clock } from './clock.ts';
 
@@ -137,16 +138,50 @@ test('Close counts as a dismissal; a second error this session does not bring it
   assert.equal(pill(), null);
 });
 
-test('not while a text field has focus: gives up after 30 s', async () => {
+const key = (el: Element) => el.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', bubbles: true, composed: true }));
+
+test('a field that merely has focus does not hold it back', async () => {
   await start();
   advance(10_000);
   ($('#name') as HTMLInputElement).focus();
   uncaught();
-  advance(31_000);
-  assert.equal(pill(), null);
-  ($('#name') as HTMLInputElement).blur();
-  advance(5_000);
+  advance(1);
+  assert.ok(pill());
+});
+
+test('typing holds it back until 5 s after the last key; typing on for 30 s and it gives up', async () => {
+  await start();
+  advance(10_000);
+  key($('#name'));
+  uncaught();
+  advance(4000);
+  assert.equal(pill(), null, 'a key 4 s ago');
+  advance(1500);
+  assert.ok(pill(), 'shown once 5 s have passed without a key');
+
+  fb!.destroy();
+  localStorage.removeItem('ob-feedback-prompt'); // a new day, as far as minHoursBetween goes
+  await start();
+  advance(10_000);
+  uncaught();
+  key($('#name'));
+  advance(1);
+  // Still typing: a key every 2 s for 32 s.
+  for (let i = 0; i < 16; i++) {
+    key($('#name'));
+    advance(2000);
+  }
+  advance(10_000);
   assert.equal(pill(), null, 'it gave up rather than waiting on');
+  // A key outside a text field is not typing.
+  fb!.destroy();
+  localStorage.removeItem('ob-feedback-prompt');
+  await start();
+  advance(10_000);
+  key($('#b'));
+  uncaught();
+  advance(1);
+  assert.ok(pill());
 });
 
 test('requests: a 5xx or a failure from the app\'s own hosts counts; a 4xx, another site, an abort and our door do not', async () => {
@@ -207,4 +242,13 @@ test('appHosts: hosts, wildcards and origins', () => {
   assert.ok(m('https://auth.example.org:8443/login'));
   assert.ok(!m('https://evil.example/api.example.com'));
   assert.ok(m('/relative/path'), 'the page\'s own origin');
+});
+
+test('the on-screen keyboard: a visual viewport notably shorter than the layout one, on touch', () => {
+  const w = (inner: number, vv: number, touch: number) =>
+    ({ innerHeight: inner, visualViewport: { height: vv }, navigator: { maxTouchPoints: touch } }) as unknown as Window;
+  assert.equal(keyboardUp(w(800, 450, 5)), true);
+  assert.equal(keyboardUp(w(800, 740, 5)), false, 'a toolbar sliding in');
+  assert.equal(keyboardUp(w(800, 450, 0)), false, 'not a touch device');
+  assert.equal(keyboardUp({ innerHeight: 800, navigator: { maxTouchPoints: 5 } } as unknown as Window), false, 'no visualViewport');
 });

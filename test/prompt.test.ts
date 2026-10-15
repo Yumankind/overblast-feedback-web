@@ -258,7 +258,7 @@ test('about 8 s on screen; the pointer over it holds it; Report opens the sheet'
   assert.ok(p.showingNow, 'the time it had left, at least two seconds');
   p.clock.advance(200);
   assert.ok(!p.showingNow, 'gone by itself');
-  assert.equal(p.logs.at(-1), 'error prompt went away unanswered');
+  assert.equal(p.logs.at(-1), 'error prompt went by itself');
 
   const r = session();
   r.p.clock.advance(20_000);

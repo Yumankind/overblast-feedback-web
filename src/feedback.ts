@@ -9,7 +9,7 @@
 
 import { Capture, sameOrigin } from './capture.ts';
 import { ConfigClient, DEFAULT_CONFIG, type KeyConfig } from './config.ts';
-import { ErrorPrompt, textFieldFocused, type PromptClock } from './prompt.ts';
+import { ErrorPrompt, TypingTracker, type PromptClock } from './prompt.ts';
 import { collectContext, safeStorage } from './context.ts';
 import { DeviceClient } from './device.ts';
 import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
@@ -319,6 +319,8 @@ export function init(options: InitOptions): FeedbackInstance {
     clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>),
   };
   const startedAt = clock.now();
+  const typing = win && options.errorPrompt !== false ? new TypingTracker(win, clock.now) : null;
+  if (typing) cleanups.push(() => typing.destroy());
   const prompt: ErrorPrompt | null =
     doc && options.errorPrompt !== false
       ? new ErrorPrompt({
@@ -329,7 +331,7 @@ export function init(options: InitOptions): FeedbackInstance {
           locallyOff: false,
           startedAt,
           isSheetOpen: () => !!ui?.isOpen || !!ui?.isPicking,
-          isTyping: () => textFieldFocused(doc),
+          isTyping: () => !!typing?.typing(),
           isVisible: () => doc.visibilityState !== 'hidden',
           show: (h) => ui?.showPrompt(h),
           hide: () => ui?.hidePrompt(),

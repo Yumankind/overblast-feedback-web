@@ -252,14 +252,16 @@ a close button, in the page's light or dark scheme. It is not a dialog, and it k
   your code caught and logged); a 5xx answer from the page's own origin or your `appHosts` (not a
   4xx, which is usually the person's own input, and not another site's); a request to those hosts
   that never answered (an abort is not a failure). The library's own requests never count.
-- **When**: at least 10 seconds after `init`; not while a text field has focus (it waits up to 30
-  seconds, then gives up); not while the sheet is open; only while the page is visible.
+- **When**: at least 10 seconds after `init`; not while the person is typing (a key pressed in a
+  text field in the last 5 seconds, or the on-screen keyboard up; a field that merely has focus does
+  not count), waiting up to 30 seconds for that to end before giving up; not while the sheet is
+  open; only while the page is visible. While it shows, it rides above the on-screen keyboard.
 - **How often**: once per page, at most once per the key's `minHoursBetween` on this browser, and
   after two closes without reporting, not again for seven days. Errors a second apart are one.
 - **How it behaves**: it fades in (not with reduced motion), stays about 8 seconds, longer while the
   pointer is over it, and screen readers announce it politely. **Report** opens the sheet as a bug,
   with `trigger: error_prompt`, so the error is among the lines just before. Each prompt is a line in
-  the log (`error prompt shown`, `dismissed`), so a report says whether the person was prompted.
+  the log (`error prompt shown`, `error prompt dismissed`, `error prompt went by itself`, `error prompt: reporting`), so a report says whether the person was prompted.
 
 Labels: `promptText`, `promptReport`, `promptClose`.
 

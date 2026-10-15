@@ -664,6 +664,7 @@ export class FeedbackUi {
   // ── The error prompt's pill (§3.6) ──────────────────────────────────────────────────────────
 
   private pill: HTMLDivElement | null = null;
+  private pillOff: (() => void) | null = null;
 
   get promptShowing(): boolean {
     return !!this.pill;
@@ -691,11 +692,30 @@ export class FeedbackUi {
     pill.addEventListener('focusout', () => h.hold(false));
     this.root.appendChild(pill);
     this.pill = pill;
+    // It follows the on-screen keyboard: lifted by however much of the layout viewport the visual
+    // viewport no longer shows at the bottom.
+    const win = this.doc.defaultView;
+    const vv = win?.visualViewport;
+    if (win && vv) {
+      const follow = () => {
+        const hidden = Math.max(0, win.innerHeight - (vv.height + vv.offsetTop));
+        pill.style.transform = hidden > 0 ? `translateY(${-Math.round(hidden)}px)` : '';
+      };
+      follow();
+      vv.addEventListener('resize', follow);
+      vv.addEventListener('scroll', follow);
+      this.pillOff = () => {
+        vv.removeEventListener('resize', follow);
+        vv.removeEventListener('scroll', follow);
+      };
+    }
     // Fade in on the next frame (no animation with reduced motion: the stylesheet says so).
     void nextFrame().then(() => pill.classList.remove('entering'));
   }
 
   hidePrompt(): void {
+    this.pillOff?.();
+    this.pillOff = null;
     this.pill?.remove();
     this.pill = null;
   }

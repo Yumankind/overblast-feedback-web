@@ -6,8 +6,9 @@
  *
  * - the key has it on, for this kind of error, and the integrator has not turned it off;
  * - at least 10 seconds since `init`;
- * - no text field has focus and the page is visible (it waits up to 30 seconds for that, then
- *   gives up), and the report sheet is not open;
+ * - the person is not typing (a key in a text field in the last 5 s, or the on-screen keyboard up;
+ *   a field that merely has focus does not count) and the page is visible (it waits up to 30
+ *   seconds for that, then gives up), and the report sheet is not open;
  * - not yet shown in this page session, not within `minHoursBetween` of the last time on this
  *   device, and not within seven days of the person closing it twice without reporting.
  *
@@ -174,7 +175,7 @@ export class ErrorPrompt {
     this.expireTimer = this.d.setTimeout(() => {
       this.expireTimer = null;
       if (!this.visible) return;
-      this.d.log('error prompt went away unanswered');
+      this.d.log('error prompt went by itself');
       this.takeDown();
     }, this.remaining);
   }
@@ -223,12 +224,10 @@ export class ErrorPrompt {
   }
 }
 
-/** Whether the focused element (looking into open shadow roots) takes text. */
-export function textFieldFocused(doc: Document): boolean {
+/** Whether an element takes text: a text-like input, a textarea, or something contenteditable. */
+export function isTextField(el: Element | null | undefined): boolean {
   try {
-    let el: Element | null = doc.activeElement;
-    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
-    if (!el) return false;
+    if (!el || typeof el.tagName !== 'string') return false;
     if ((el as HTMLElement).isContentEditable) return true;
     const tag = el.tagName;
     if (tag === 'TEXTAREA') return true;
@@ -236,8 +235,65 @@ export function textFieldFocused(doc: Document): boolean {
       const type = ((el as HTMLInputElement).type || 'text').toLowerCase();
       return !['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'].includes(type);
     }
-    return el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '';
+    const ce = el.getAttribute('contenteditable');
+    return ce === 'true' || ce === '' || ce === 'plaintext-only';
   } catch {
     return false;
+  }
+}
+
+/** A key pressed in a text field this recently counts as typing (§3.6). */
+export const TYPING_WINDOW_MS = 5_000;
+
+/**
+ * On a touch device, whether the on-screen keyboard is up: the visual viewport is notably shorter
+ * than the layout viewport (a quarter of it, and at least 120 px, so a browser's own toolbars
+ * sliding in and out do not count).
+ */
+export function keyboardUp(win: Window): boolean {
+  try {
+    const vv = win.visualViewport;
+    if (!vv || !(win.navigator?.maxTouchPoints > 0)) return false;
+    const gap = win.innerHeight - vv.height;
+    return gap > 120 && vv.height < win.innerHeight * 0.75;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the person is typing: a `keydown` or `input` in a text field in the last 5 seconds, or the
+ * on-screen keyboard up. A field that merely has focus does not count: many pages focus one by
+ * themselves.
+ */
+export class TypingTracker {
+  private lastAt = -Infinity;
+  private readonly off: () => void;
+  private readonly win: Window;
+  private readonly now: () => number;
+  constructor(win: Window, now: () => number) {
+    this.win = win;
+    this.now = now;
+    const doc = win.document;
+    const on = (e: Event) => {
+      try {
+        const target = (typeof e.composedPath === 'function' ? e.composedPath()[0] : e.target) as Element | null;
+        if (isTextField(target)) this.lastAt = this.now();
+      } catch {
+        /* not typing, as far as we can tell */
+      }
+    };
+    doc.addEventListener('keydown', on, true);
+    doc.addEventListener('input', on, true);
+    this.off = () => {
+      doc.removeEventListener('keydown', on, true);
+      doc.removeEventListener('input', on, true);
+    };
+  }
+  typing(): boolean {
+    return this.now() - this.lastAt < TYPING_WINDOW_MS || keyboardUp(this.win);
+  }
+  destroy(): void {
+    this.off();
   }
 }
