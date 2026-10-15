@@ -37,6 +37,7 @@ export type {
   ReportInput,
   ReportResult,
   Reporter,
+  ThemeOptions,
   Trigger,
   TriggerOptions,
 } from './types.ts';

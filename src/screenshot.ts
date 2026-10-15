@@ -42,6 +42,12 @@ export interface Shot {
   blob: Blob;
   contentType: 'image/jpeg' | 'image/png' | 'image/webp';
   highlighted: boolean;
+  /** The viewport the image shows, in CSS px, for mapping a page box onto the image. */
+  viewport?: { w: number; h: number };
+  /** The selected element's box when it was captured, in viewport CSS px. */
+  box?: PixelRect | null;
+  /** The image's own size in pixels. */
+  size?: { w: number; h: number };
 }
 
 function boxOf(el: Element): PixelRect | null {
@@ -112,7 +118,9 @@ export async function finishShot(doc: Document, source: CanvasImageSource, srcW:
     }
     const blob = await canvasToBlob(canvas, 'image/jpeg', quality);
     if (!blob) return null;
-    if (blob.size <= MAX_SCREENSHOT_BYTES) return { blob, contentType: 'image/jpeg', highlighted };
+    if (blob.size <= MAX_SCREENSHOT_BYTES) {
+      return { blob, contentType: 'image/jpeg', highlighted, viewport: { w: plan.vw, h: plan.vh }, box: plan.highlight, size: { w: canvas.width, h: canvas.height } };
+    }
     scale *= 0.75;
     quality = Math.max(0.5, quality - 0.1);
   }

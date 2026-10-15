@@ -11,6 +11,7 @@ import { Capture, sameOrigin } from './capture.ts';
 import { ConfigClient, DEFAULT_CONFIG, categoryRefusal, type KeyConfig } from './config.ts';
 import { CHAT_READY_EVENT, chatApi, chatPresent, embedHeaders, type FeedbackCapabilities, type FeedbackOpenOptions, type FeedbackOpenResult } from './chat.ts';
 import { ErrorPrompt, TypingTracker, type PromptClock } from './prompt.ts';
+import { resolveTheme } from './theme.ts';
 import { collectContext, safeStorage } from './context.ts';
 import { DeviceClient } from './device.ts';
 import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
@@ -258,6 +259,7 @@ export function init(options: InitOptions): FeedbackInstance {
     if (destroyed || !doc || ui) return;
     ui = new FeedbackUi(doc, {
       labels,
+      theme: resolveTheme(options.theme, doc),
       position: buttonShow === false ? null : typeof buttonSetting === 'object' ? (buttonSetting.position ?? 'bottom-right') : 'bottom-right',
       privateSelector,
       needsEmail: () => !reporter()?.email,

@@ -1,19 +1,27 @@
 /**
- * Everything the person sees: the floating button, the sheet, and the element picker. All of it
- * lives in one shadow root on one host element, so the page's CSS cannot break it and its CSS
- * cannot leak onto the page. The host carries `data-overblast-feedback`, which is how the picker
- * and the screenshot know to leave it out.
+ * Everything the person sees: the floating button, the sheet, the element picker, the screenshot
+ * editor and the error prompt's pill. All of it lives in one shadow root on one host element, so the
+ * page's CSS cannot break it and its CSS cannot leak onto the page. The host carries
+ * `data-overblast-feedback`, which is how the picker and the screenshot know to leave it out.
+ *
+ * The sheet is three bands: the title, a body that scrolls, and a bar with Send that does not. It is
+ * never taller than the visible viewport (the visual viewport, so an on-screen keyboard shrinks it
+ * and Send stays above the keys), at 320 × 480 as at 1440 × 900.
  */
 
+import { composeEdits, cropAround, MIN_EDIT, paintEdits, spanRect, type EditKind, type EditRect, type Paint2D } from './annotate.ts';
 import { clearDraft, loadDraft, saveDraft } from './draft.ts';
 import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
 import { FeedbackError, isEmail } from './payload.ts';
-import type { Shot } from './screenshot.ts';
-import { BUG_ICON, CSS } from './styles.ts';
+import { decodeBlob, type Shot } from './screenshot.ts';
+import { BUG_ICON, CHECK_ICON, CSS } from './styles.ts';
+import { applyTheme, type ResolvedTheme } from './theme.ts';
 import type { ButtonPosition, Category, DomElement, Labels, ReportResult, Trigger } from './types.ts';
 
 export const HOST_TAG = 'overblast-feedback';
 export const HOST_ATTR = 'data-overblast-feedback';
+/** How long "Sent, thank you" stays before the sheet closes. */
+export const SENT_HOLD_MS = 1500;
 
 export interface SheetValues {
   message: string;
@@ -33,6 +41,8 @@ export interface UiDeps {
   /** Null: no floating button. */
   position: ButtonPosition | null;
   privateSelector: string;
+  /** Colours, font, radius and scheme (`init({ theme })` and the page's `--overblast-accent`). */
+  theme?: ResolvedTheme | undefined;
   /** True when the integrator gave no email, so the sheet asks for one. */
   needsEmail(): boolean;
   takeScreenshot(selected: Element | null): Promise<Shot | null>;
@@ -75,7 +85,7 @@ const nextFrame = () =>
     }
   });
 
-const FOCUSABLE = 'button:not([disabled]):not([hidden]), input:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const FOCUSABLE = 'button:not([disabled]):not([hidden]), input:not([disabled]), textarea:not([disabled]), canvas[tabindex], [tabindex]:not([tabindex="-1"])';
 
 export class FeedbackUi {
   readonly host: HTMLElement;
@@ -89,9 +99,16 @@ export class FeedbackUi {
   /** Between `open` and `close`, whatever the backdrop does meanwhile (it hides for the picker and the screenshot). */
   private session = false;
   private shotUrl: string | null = null;
+  /** The screenshot as taken, before the person's edits; edits are painted from it each time. */
+  private shotBase: Shot | null = null;
+  private edits: EditRect[] = [];
   private busy = false;
   private picking: { finish: (el: Element | null) => void } | null = null;
   private destroyed = false;
+  private sentTimer: ReturnType<typeof setTimeout> | null = null;
+  private viewportOff: (() => void) | null = null;
+  private editor: { el: HTMLElement; close: (apply: boolean) => void } | null = null;
+  private thumbToken = 0;
 
   constructor(doc: Document, deps: UiDeps) {
     this.doc = doc;
@@ -100,6 +117,7 @@ export class FeedbackUi {
     this.host.setAttribute(HOST_ATTR, '');
     // `all: initial` keeps page rules such as `* { display: grid }` off the host itself.
     this.host.style.cssText = 'all: initial; position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 2147483647;';
+    if (deps.theme) applyTheme(this.host, deps.theme);
     this.root = this.host.attachShadow({ mode: 'open' });
     const style = doc.createElement('style');
     style.textContent = CSS;
@@ -141,7 +159,7 @@ export class FeedbackUi {
     return !!this.fab && !this.fab.hidden;
   }
 
-  /** Start pointing at an element from the open sheet, as its "Point at it" button does. */
+  /** Start pointing at an element from the open sheet, as its "Point at the problem" button does. */
   startPick(): Promise<void> {
     return this.pickFromSheet();
   }
@@ -156,6 +174,7 @@ export class FeedbackUi {
     if (!this.backdrop) this.buildSheet();
     const backdrop = this.backdrop!;
     if (!backdrop.hidden) return;
+    this.hideDone();
     this.hidePrompt();
     this.values.openedAt = Date.now();
     this.values.trigger = trigger;
@@ -178,6 +197,7 @@ export class FeedbackUi {
     if (preset.category) this.values.category = preset.category;
     this.render();
     backdrop.hidden = false;
+    this.followViewport();
     this.session = true;
     try {
       this.deps.onOpen?.();
@@ -190,7 +210,11 @@ export class FeedbackUi {
 
   close(): void {
     if (!this.backdrop || this.backdrop.hidden) return;
+    this.editor?.close(false);
     this.backdrop.hidden = true;
+    this.hideDone();
+    this.viewportOff?.();
+    this.viewportOff = null;
     this.endSession();
     if (this.fab) this.fab.setAttribute('aria-expanded', 'false');
     const back = this.returnFocus as HTMLElement | null;
@@ -200,6 +224,31 @@ export class FeedbackUi {
     } catch {
       /* the element went away */
     }
+  }
+
+  /**
+   * Fit the backdrop to the visual viewport: with an on-screen keyboard up, that is the part of the
+   * screen above the keys, so the sheet (at most the backdrop's height) keeps Send in view.
+   */
+  private followViewport(): void {
+    const backdrop = this.backdrop;
+    const vv = this.doc.defaultView?.visualViewport;
+    if (!backdrop || !vv || this.viewportOff) return;
+    const sync = () => {
+      backdrop.style.top = `${Math.round(vv.offsetTop)}px`;
+      backdrop.style.height = `${Math.round(vv.height)}px`;
+      backdrop.style.bottom = 'auto';
+    };
+    sync();
+    vv.addEventListener('resize', sync);
+    vv.addEventListener('scroll', sync);
+    this.viewportOff = () => {
+      vv.removeEventListener('resize', sync);
+      vv.removeEventListener('scroll', sync);
+      backdrop.style.top = '';
+      backdrop.style.height = '';
+      backdrop.style.bottom = '';
+    };
   }
 
   private q<T extends Element>(sel: string): T | null {
@@ -222,9 +271,9 @@ export class FeedbackUi {
           <button type="button" class="icon" data-act="close" aria-label="${esc(L.close)}">×</button>
         </div>
         <form novalidate>
-          <div style="display:flex;flex-direction:column;gap:14px">
-            <fieldset>
-              <legend>${esc(L.categoryLegend)}</legend>
+          <div class="body" data-part="body">
+            <fieldset class="cats">
+              <legend class="sr">${esc(L.categoryLegend)}</legend>
               <div class="chips">${CATEGORY_ORDER.map(chip).join('')}</div>
             </fieldset>
             <label class="field">${esc(L.messageLabel)}
@@ -232,24 +281,30 @@ export class FeedbackUi {
               <span class="err" id="ob-msg-err" data-err="message" hidden></span>
             </label>
             <div class="row" data-part="pick">
-              <button type="button" class="btn" data-act="pick">${esc(L.pointAt)}</button>
+              <button type="button" class="btn" data-act="pick"><span aria-hidden="true">⌖</span> ${esc(L.pointAt)}</button>
             </div>
             <div class="selected" data-part="selected" hidden>
-              <span>${esc(L.selected)}:</span><code data-part="selected-text"></code>
-              <button type="button" class="icon" data-act="pick" aria-label="${esc(L.pointAgain)}" title="${esc(L.pointAgain)}">⌖</button>
-              <button type="button" class="icon" data-act="unselect" aria-label="${esc(L.removeElement)}">×</button>
+              <div class="pick-thumb" data-part="pick-thumb" aria-hidden="true"></div>
+              <div class="sel-text"><span class="hint">${esc(L.selected)}</span><code data-part="selected-text"></code></div>
+              <div class="sel-actions">
+                <button type="button" class="btn small" data-act="pick" aria-label="${esc(L.pointAgain)}">${esc(L.changeElement)}</button>
+                <button type="button" class="btn small" data-act="unselect" aria-label="${esc(L.removeElement)}">${esc(L.removeElementShort)}</button>
+              </div>
             </div>
             <label class="field" data-part="email" hidden>${esc(L.emailLabel)}
               <input type="email" name="email" autocomplete="email" inputmode="email" aria-describedby="ob-email-hint ob-email-err">
               <span class="hint" id="ob-email-hint">${esc(L.emailHint)}</span>
               <span class="err" id="ob-email-err" data-err="email" hidden></span>
             </label>
-            <div data-part="shot-row">
+            <div class="shot" data-part="shot-row">
               <label class="check"><input type="checkbox" name="screenshot"><span>${esc(L.includeScreenshot)}</span></label>
               <p class="hint" data-part="shot-note" hidden></p>
               <div class="thumb" data-part="thumb" hidden>
-                <img alt="" data-part="thumb-img">
-                <button type="button" class="icon" data-act="unshot" aria-label="${esc(L.removeScreenshot)}">×</button>
+                <button type="button" class="shot-preview" data-act="edit-shot" aria-label="${esc(L.editShot)}" title="${esc(L.editShot)}">
+                  <img alt="" data-part="thumb-img">
+                </button>
+                <button type="button" class="icon on-image" data-act="unshot" aria-label="${esc(L.removeScreenshot)}">×</button>
+                <p class="hint">${esc(L.editShotHint)}</p>
               </div>
             </div>
             <div class="offer" data-part="shake" hidden>
@@ -258,19 +313,24 @@ export class FeedbackUi {
               <button type="button" class="btn link" data-act="shake-off">${esc(L.shakeDismiss)}</button>
             </div>
             <p class="preview" data-part="preview"></p>
+          </div>
+          <div class="foot">
             <p class="status" role="status" aria-live="polite" data-part="status"></p>
-            <div class="foot">
-              <button type="submit" class="btn primary" data-act="send">${esc(L.send)}</button>
-            </div>
+            <button type="button" class="btn" data-act="close">${esc(L.cancel)}</button>
+            <button type="submit" class="btn primary" data-act="send">${esc(L.send)}</button>
           </div>
         </form>
+        <div class="done" data-part="done" role="status" aria-live="polite" hidden>
+          <span class="tick">${CHECK_ICON}</span>
+          <p data-part="done-text"></p>
+        </div>
       </div>`;
     this.root.appendChild(backdrop);
     this.backdrop = backdrop;
 
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) {
-        this.close();
+        if (!this.editor) this.close();
         return;
       }
       const act = (e.target as Element).closest?.('[data-act]')?.getAttribute('data-act');
@@ -309,6 +369,7 @@ export class FeedbackUi {
       this.render();
       if (this.values.shot) void this.captureShot();
     } else if (act === 'unshot') void this.dropShot();
+    else if (act === 'edit-shot') void this.openEditor();
     else if (act === 'shake-on') {
       // Inside the click: iOS only shows its permission prompt from a gesture.
       const pending = this.deps.shake.enable();
@@ -324,20 +385,22 @@ export class FeedbackUi {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      this.close();
+      if (this.editor) this.editor.close(false);
+      else this.close();
       return;
     }
     if (e.key !== 'Tab') return;
-    // The focus trap: Tab and Shift+Tab cycle inside the sheet.
-    const items = Array.from(this.backdrop!.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => !el.closest('[hidden]'));
+    // The focus trap: Tab and Shift+Tab cycle inside the sheet, or inside the editor when it is up.
+    const scope: ParentNode = this.editor?.el ?? this.backdrop!;
+    const items = Array.from(scope.querySelectorAll<HTMLElement>(FOCUSABLE)).filter((el) => !el.closest('[hidden]') && (this.editor || !el.closest('.editor')));
     if (!items.length) return;
     const first = items[0]!;
     const last = items[items.length - 1]!;
     const active = this.root.activeElement;
-    if (e.shiftKey && (active === first || !active)) {
+    if (e.shiftKey && (active === first || !active || !items.includes(active as HTMLElement))) {
       e.preventDefault();
       last.focus();
-    } else if (!e.shiftKey && active === last) {
+    } else if (!e.shiftKey && (active === last || !items.includes(active as HTMLElement))) {
       e.preventDefault();
       first.focus();
     }
@@ -388,6 +451,7 @@ export class FeedbackUi {
       pickRow.hidden = !!v.anchor;
       const text = this.q<HTMLElement>('[data-part="selected-text"]');
       if (text && v.anchor) text.textContent = v.anchor.label ? `${v.anchor.tag} · ${v.anchor.label}` : v.anchor.selector;
+      if (v.anchor) void this.renderPickThumb();
     }
     const shotsAllowed = this.deps.screenshotsAllowed?.() !== false;
     if (!shotsAllowed && v.shot) this.setShot(null);
@@ -404,6 +468,41 @@ export class FeedbackUi {
     const offer = this.q<HTMLElement>('[data-part="shake"]');
     if (offer) offer.hidden = !this.deps.shake.offer();
     this.renderPreview();
+  }
+
+  /**
+   * The pick's thumbnail: a crop of the screenshot around the element when there is one that shows
+   * it, else a small card with the element's tag and text.
+   */
+  private async renderPickThumb(): Promise<void> {
+    const slot = this.q<HTMLElement>('[data-part="pick-thumb"]');
+    const anchor = this.values.anchor;
+    if (!slot || !anchor) return;
+    const token = ++this.thumbToken;
+    const card = () => {
+      slot.className = 'pick-thumb card';
+      slot.innerHTML = `<b>&lt;${esc(anchor.tag)}&gt;</b><span>${esc(anchor.label ?? anchor.textQuote?.exact ?? '')}</span>`;
+    };
+    const shot = this.values.shot;
+    if (!shot || !shot.box || !shot.viewport) return card();
+    const decoded = await decodeBlob(this.doc, shot.blob).catch(() => null);
+    if (token !== this.thumbToken) return decoded?.close();
+    if (!decoded) return card();
+    try {
+      const canvas = this.doc.createElement('canvas');
+      canvas.width = 168;
+      canvas.height = 112;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return card();
+      const c = cropAround(shot.box, shot.viewport, { w: decoded.w, h: decoded.h }, canvas.width / canvas.height);
+      ctx.drawImage(decoded.source, c.x, c.y, c.w, c.h, 0, 0, canvas.width, canvas.height);
+      slot.className = 'pick-thumb';
+      slot.replaceChildren(canvas);
+    } catch {
+      card();
+    } finally {
+      decoded.close();
+    }
   }
 
   private renderPreview(): void {
@@ -435,7 +534,13 @@ export class FeedbackUi {
       this.host.style.visibility = prev;
       if (backdrop) backdrop.hidden = false;
     }
-    this.setShot(shot);
+    // Edits made on the last screenshot still fit a new one of the same size (the same viewport).
+    const keep = shot && this.edits.length && this.shotBase?.size && shot.size && this.shotBase.size.w === shot.size.w && this.shotBase.size.h === shot.size.h;
+    if (!keep) this.edits = [];
+    this.shotBase = shot;
+    let shown = shot;
+    if (shot && this.edits.length) shown = (await composeEdits(this.doc, shot, this.edits).catch(() => null)) ?? shot;
+    this.setShot(shown, true);
     if (!shot && note) {
       note.textContent = this.deps.labels.screenshotFailed;
       note.hidden = false;
@@ -443,7 +548,8 @@ export class FeedbackUi {
     this.render();
   }
 
-  private setShot(shot: Shot | null): void {
+  /** `keepBase`: the shot is (an edit of) the current base; otherwise a new one replaces everything. */
+  private setShot(shot: Shot | null, keepBase = false): void {
     if (this.shotUrl) {
       try {
         URL.revokeObjectURL(this.shotUrl);
@@ -453,6 +559,10 @@ export class FeedbackUi {
     }
     this.shotUrl = null;
     this.values.shot = shot;
+    if (!keepBase) {
+      this.shotBase = shot;
+      this.edits = [];
+    }
     if (shot) {
       try {
         this.shotUrl = URL.createObjectURL(shot.blob);
@@ -483,6 +593,149 @@ export class FeedbackUi {
     }
   }
 
+  // ── The screenshot editor ───────────────────────────────────────────────────────────────────
+
+  /** Draw boxes that cover or blur parts of the screenshot. The private masks are in the base image. */
+  private async openEditor(): Promise<void> {
+    const base = this.shotBase;
+    if (!base || this.editor || !this.backdrop) return;
+    const decoded = await decodeBlob(this.doc, base.blob).catch(() => null);
+    if (!decoded) return;
+    const L = this.deps.labels;
+    const doc = this.doc;
+    const el = doc.createElement('div');
+    el.className = 'editor';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-modal', 'true');
+    el.setAttribute('aria-label', L.editShot);
+    el.innerHTML = `
+      <div class="ed-bar">
+        <div class="seg" role="group" aria-label="${esc(L.editShot)}">
+          <button type="button" data-ed="cover" aria-pressed="true">${esc(L.editorCover)}</button>
+          <button type="button" data-ed="blur" aria-pressed="false">${esc(L.editorBlur)}</button>
+        </div>
+        <button type="button" class="btn small" data-ed="undo">${esc(L.editorUndo)}</button>
+        <button type="button" class="btn small" data-ed="clear">${esc(L.editorClear)}</button>
+        <span class="grow"></span>
+        <button type="button" class="btn small" data-ed="cancel">${esc(L.cancel)}</button>
+        <button type="button" class="btn primary small" data-ed="done">${esc(L.editorDone)}</button>
+      </div>
+      <p class="ed-hint">${esc(L.editorHint)}</p>
+      <div class="ed-stage"><canvas tabindex="0" aria-label="${esc(L.editShot)}"></canvas></div>`;
+    this.backdrop.appendChild(el);
+    const canvas = el.querySelector('canvas')!;
+    canvas.width = decoded.w;
+    canvas.height = decoded.h;
+    const ctx = canvas.getContext('2d') as (CanvasRenderingContext2D & Paint2D) | null;
+    const scratchCanvas = doc.createElement('canvas');
+    const scratchCtx = scratchCanvas.getContext('2d');
+    const scratch = () =>
+      scratchCtx
+        ? {
+            ctx: scratchCtx as unknown as Paint2D,
+            canvas: scratchCanvas,
+            resize: (w: number, h: number) => {
+              scratchCanvas.width = w;
+              scratchCanvas.height = h;
+            },
+          }
+        : null;
+    const before = this.edits.slice();
+    let edits = this.edits.slice();
+    let kind: EditKind = 'cover';
+    let accent = '#0a5cff';
+    try {
+      accent = doc.defaultView?.getComputedStyle(this.host).getPropertyValue('--ob-accent').trim() || accent;
+    } catch {
+      /* the default */
+    }
+    const paint = (draft?: EditRect) => {
+      if (!ctx) return;
+      paintEdits(ctx, decoded.source, decoded.w, decoded.h, edits, scratch);
+      if (draft) {
+        ctx.save();
+        ctx.lineWidth = Math.max(2, Math.round(decoded.w / 500));
+        ctx.setLineDash([8, 6]);
+        ctx.strokeStyle = '#ffffff';
+        ctx.strokeRect(draft.x, draft.y, draft.w, draft.h);
+        ctx.strokeStyle = accent;
+        ctx.lineDashOffset = 7;
+        ctx.strokeRect(draft.x, draft.y, draft.w, draft.h);
+        ctx.restore();
+      }
+    };
+    paint();
+    const toImage = (e: PointerEvent) => {
+      const r = canvas.getBoundingClientRect();
+      return { x: ((e.clientX - r.left) / Math.max(1, r.width)) * decoded.w, y: ((e.clientY - r.top) / Math.max(1, r.height)) * decoded.h };
+    };
+    let start: { x: number; y: number } | null = null;
+    canvas.addEventListener('pointerdown', (e) => {
+      start = toImage(e);
+      try {
+        canvas.setPointerCapture(e.pointerId);
+      } catch {
+        /* fine */
+      }
+      e.preventDefault();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      paint({ ...spanRect(start, toImage(e), decoded.w, decoded.h), kind });
+    });
+    const end = (e: PointerEvent) => {
+      if (!start) return;
+      const r = spanRect(start, toImage(e), decoded.w, decoded.h);
+      start = null;
+      if (r.w >= MIN_EDIT && r.h >= MIN_EDIT) edits.push({ ...r, kind });
+      paint();
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', () => {
+      start = null;
+      paint();
+    });
+    const setKind = (k: EditKind) => {
+      kind = k;
+      for (const b of Array.from(el.querySelectorAll<HTMLElement>('[data-ed="cover"], [data-ed="blur"]'))) b.setAttribute('aria-pressed', String(b.dataset.ed === k));
+    };
+    const close = (apply: boolean) => {
+      if (this.editor?.el !== el) return;
+      this.editor = null;
+      el.remove();
+      decoded.close();
+      if (!apply) this.edits = before;
+      this.q<HTMLButtonElement>('[data-act="edit-shot"]')?.focus();
+    };
+    el.addEventListener('click', (e) => {
+      const ed = (e.target as Element).closest?.('[data-ed]')?.getAttribute('data-ed');
+      if (ed === 'cover' || ed === 'blur') setKind(ed);
+      else if (ed === 'undo') {
+        edits.pop();
+        paint();
+      } else if (ed === 'clear') {
+        edits = [];
+        paint();
+      } else if (ed === 'cancel') close(false);
+      else if (ed === 'done') {
+        const chosen = edits.slice();
+        this.edits = chosen;
+        close(true);
+        void composeEdits(this.doc, base, chosen).then((shot) => {
+          if (shot && this.shotBase === base) {
+            this.setShot(shot, true);
+            this.render();
+          }
+        });
+      }
+      e.stopPropagation();
+    });
+    this.editor = { el, close };
+    el.querySelector<HTMLElement>('[data-ed="cover"]')?.focus();
+  }
+
+  // ── Sending ─────────────────────────────────────────────────────────────────────────────────
+
   private async send(): Promise<void> {
     if (this.busy) return;
     const L = this.deps.labels;
@@ -510,9 +763,10 @@ export class FeedbackUi {
       const result = await this.deps.submit({ ...v, message, email: email || undefined });
       clearDraft();
       this.reset();
-      this.setStatus(L.sent, 'ok');
+      this.setStatus('', 'info');
       if (button) button.textContent = L.send;
       this.deps.onSent?.(result);
+      this.showDone(result.known === true);
     } catch (err) {
       const e = err instanceof FeedbackError ? err : new FeedbackError(-1, 'error', L.genericError);
       if (e.code === 'invalid_field' && e.field === 'reporter.email') this.showErr('email', e.message);
@@ -538,6 +792,29 @@ export class FeedbackUi {
     }
   }
 
+  /** "Sent, thank you" over the sheet for a moment, announced politely, then the sheet closes. */
+  private showDone(known: boolean): void {
+    const done = this.q<HTMLElement>('[data-part="done"]');
+    const text = this.q<HTMLElement>('[data-part="done-text"]');
+    if (!done || !text) return this.close();
+    text.textContent = known ? this.deps.labels.sentKnown : this.deps.labels.sent;
+    done.hidden = false;
+    this.q<HTMLElement>('form')?.setAttribute('aria-hidden', 'true');
+    if (this.sentTimer) clearTimeout(this.sentTimer);
+    this.sentTimer = setTimeout(() => {
+      this.sentTimer = null;
+      this.close();
+    }, SENT_HOLD_MS);
+  }
+
+  private hideDone(): void {
+    if (this.sentTimer) clearTimeout(this.sentTimer);
+    this.sentTimer = null;
+    const done = this.q<HTMLElement>('[data-part="done"]');
+    if (done) done.hidden = true;
+    this.q<HTMLElement>('form')?.removeAttribute('aria-hidden');
+  }
+
   private reset(): void {
     this.setShot(null);
     // Still the same opening of the sheet: `openedAt` and `trigger` stay.
@@ -558,27 +835,37 @@ export class FeedbackUi {
     const box = doc.createElement('div');
     box.className = 'pick-box';
     box.hidden = true;
+    const tag = doc.createElement('span');
+    tag.className = 'pick-tag';
+    box.appendChild(tag);
     layer.appendChild(box);
     const bar = doc.createElement('div');
     bar.className = 'pick-bar';
     bar.setAttribute('role', 'toolbar');
-    bar.innerHTML = `<span data-part="hint">${esc(L.pickerHint)}</span>
-      <button type="button" class="btn primary" data-act="confirm" hidden>${esc(L.pickerConfirm)}</button>
-      <button type="button" class="btn" data-act="again" hidden>${esc(L.pickerAgain)}</button>
-      <button type="button" class="btn" data-act="cancel">${esc(L.pickerCancel)}</button>`;
+    const coarse = (() => {
+      try {
+        return !!doc.defaultView?.matchMedia?.('(pointer: coarse)').matches;
+      } catch {
+        return false;
+      }
+    })();
+    bar.innerHTML = `<span class="pick-hint" data-part="hint" aria-live="polite">${esc(coarse ? L.pickerHintTouch : L.pickerHint)}</span>
+      <button type="button" class="btn primary small" data-act="confirm" hidden>${esc(L.pickerConfirm)}</button>
+      <button type="button" class="btn small" data-act="again" hidden>${esc(L.pickerAgain)}</button>
+      <button type="button" class="btn small" data-act="cancel">${esc(L.pickerCancel)}</button>`;
     this.root.appendChild(layer);
     this.root.appendChild(bar);
 
     let current: Element | null = null;
     let staged: Element | null = null;
-    let lastPointer = 'mouse';
+    let lastPointer = coarse ? 'touch' : 'mouse';
 
     const usable = (t: EventTarget | null): Element | null => {
       if (!t || !(t as Element).tagName) return null;
       const el = t as Element;
       if (el === this.host || el.closest?.(`[${HOST_ATTR}]`)) return null;
-      const tag = el.tagName.toLowerCase();
-      if (tag === 'html') return null;
+      const name = el.tagName.toLowerCase();
+      if (name === 'html') return null;
       return el;
     };
     const show = (el: Element | null) => {
@@ -593,16 +880,19 @@ export class FeedbackUi {
       box.style.top = `${r.top}px`;
       box.style.width = `${r.width}px`;
       box.style.height = `${r.height}px`;
-      // Keep the bar out of the way of what is highlighted.
+      tag.textContent = el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '');
+      box.classList.toggle('tag-below', r.top < 26);
+      // Keep the hint bar out of the way of what is highlighted.
       const vh = doc.defaultView?.innerHeight ?? 0;
-      bar.classList.toggle('bottom', r.top < 80 && r.bottom < vh - 80);
+      bar.classList.toggle('bottom', r.top < 72 && r.bottom < vh - 80);
     };
     const setStaged = (el: Element | null) => {
       staged = el;
       const hint = bar.querySelector<HTMLElement>('[data-part="hint"]')!;
       bar.querySelector<HTMLElement>('[data-act="confirm"]')!.hidden = !el;
       bar.querySelector<HTMLElement>('[data-act="again"]')!.hidden = !el;
-      hint.textContent = el ? (el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '')) : lastPointer === 'touch' ? L.pickerHintTouch : L.pickerHint;
+      box.classList.toggle('staged', !!el);
+      hint.textContent = el ? el.tagName.toLowerCase() + (el.id ? `#${el.id}` : '') : lastPointer === 'touch' ? L.pickerHintTouch : L.pickerHint;
       if (el) bar.querySelector<HTMLElement>('[data-act="confirm"]')!.focus();
     };
 
@@ -768,6 +1058,8 @@ export class FeedbackUi {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.hideDone();
+    this.viewportOff?.();
     this.hidePrompt();
     this.endSession();
     this.picking?.finish(null);

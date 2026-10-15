@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { $, page, setRect } from './dom.ts';
 import { init } from '../src/index.ts';
 import { DRAFT_KEY } from '../src/draft.ts';
+import { SENT_HOLD_MS } from '../src/ui.ts';
 import { BODY_FIELDS } from '../src/payload.ts';
 import { isApple } from '../src/triggers.ts';
 import type { FeedbackBody, FeedbackInstance } from '../src/types.ts';
@@ -106,9 +107,42 @@ test('the button opens the sheet; Send files the report the contract describes',
   assert.equal(body.screenshot, undefined);
   assert.equal(body.element, undefined);
 
-  assert.match(status(), /Thank you/);
+  // "Sent, thank you": a check and one line over the sheet, announced politely, then it closes.
+  const done = inSheet<HTMLElement>('[data-part="done"]')!;
+  assert.equal(done.hidden, false);
+  assert.equal(done.getAttribute('aria-live'), 'polite');
+  assert.equal(inSheet<HTMLElement>('[data-part="done-text"]')!.textContent, 'Sent, thank you.');
   assert.deepEqual(sent, { id: 'fbr_1', taskId: 'todo_1', conversationId: null });
   assert.equal(inSheet<HTMLTextAreaElement>('textarea')!.value, '', 'the form is cleared');
+  assert.ok(isOpen(), 'still open for the moment');
+  await new Promise((r) => setTimeout(r, SENT_HOLD_MS - 300));
+  assert.ok(isOpen());
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(isOpen(), false, 'closed after about a second and a half');
+  assert.equal(done.hidden, true);
+});
+
+test('known: "we already know about this one"; an error keeps the sheet open with its sentence', async () => {
+  page('<main>x</main>');
+  const known = door(201, { id: 'fbr_2', taskId: 't', conversationId: null, known: true });
+  fb = init({ key: 'obfk_test', fetch: known.f, reporter: { email: 'a@b.co' } });
+  fb.open();
+  type(inSheet<HTMLTextAreaElement>('textarea')!, 'Again the total');
+  inSheet<HTMLButtonElement>('[data-act="send"]')!.click();
+  await settle();
+  assert.equal(inSheet<HTMLElement>('[data-part="done-text"]')!.textContent, "Thanks. We already know about this one and we're on it.");
+  fb.destroy();
+
+  const refused = door(400, { code: 'invalid_field', field: 'context.url', error: 'The page address is not valid.' });
+  fb = init({ key: 'obfk_test', fetch: refused.f, reporter: { email: 'a@b.co' } });
+  fb.open();
+  type(inSheet<HTMLTextAreaElement>('textarea')!, 'x');
+  inSheet<HTMLButtonElement>('[data-act="send"]')!.click();
+  await settle();
+  await new Promise((r) => setTimeout(r, SENT_HOLD_MS + 100));
+  assert.ok(isOpen(), 'an error never closes the sheet');
+  assert.equal(inSheet<HTMLElement>('[data-part="done"]')!.hidden, true);
+  assert.match(status(), /The page address is not valid/);
 });
 
 test('429: the door\'s sentence is shown, the draft is kept, and it comes back next time', async () => {
@@ -212,6 +246,17 @@ test('point at the problem: the picker selects an element and the report carries
   assert.ok(isOpen(), 'the sheet is back');
   assert.equal(inSheet<HTMLElement>('[data-part="selected"]')!.hidden, false);
   assert.match(inSheet<HTMLElement>('[data-part="preview"]')!.textContent!, /the selected element/);
+  // No screenshot to crop from: the thumbnail is a small card with the tag and the text.
+  const thumb = inSheet<HTMLElement>('[data-part="pick-thumb"]')!;
+  assert.ok(thumb.classList.contains('card'));
+  assert.equal(thumb.querySelector('b')!.textContent, '<button>');
+  assert.equal(thumb.querySelector('span')!.textContent, 'Remove shoes');
+  // Change and Remove beside it.
+  const actions = Array.from(inSheet<HTMLElement>('.sel-actions')!.querySelectorAll('button')).map((b) => [b.dataset.act, b.textContent]);
+  assert.deepEqual(actions, [
+    ['pick', 'Change'],
+    ['unselect', 'Remove'],
+  ]);
   inSheet<HTMLButtonElement>('[data-act="send"]')!.click();
   await settle();
   const el = calls[0]!.body.element!;

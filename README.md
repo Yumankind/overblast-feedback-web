@@ -10,7 +10,7 @@ when they chose to attach one.
 npm i @overblast/feedback@^0.2.0
 ```
 
-Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 33 KB
+Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 37 KB
 gzipped, and an optional 1.5 KB recorder for `<head>` ([below](#catch-errors-from-the-first-line)).
 
 ---
@@ -80,6 +80,7 @@ init({
   privateSelector: '[data-overblast-private]',
   locale: 'pt-PT',                                  // what context.locale says; default navigator.language
   labels: { title: 'Enviar comentário', send: 'Enviar' },
+  theme: { accent: '#8a4b2a', font: 'Inter, sans-serif', radius: 12, colorScheme: 'auto' },
   captureConsole: true,
   captureNetwork: true,
   onSent: ({ id, taskId, conversationId }) => {},
@@ -117,6 +118,33 @@ answer in `localStorage` with its ETag, asks again at most every five minutes on
 and uses the kept answer when offline. Until it has ever had an answer it behaves as the defaults:
 no device registration, no error prompt, screenshots offered. Your own options can only turn these
 off, never on.
+
+### The look
+
+`theme` styles the sheet, the chips, the buttons, the picker's highlight and the error prompt:
+`accent` (any CSS colour; the text on it is white or near-black, whichever reads better), `font` (a
+`font-family` list), `radius` (the sheet's corners in px; buttons and fields follow) and
+`colorScheme` (`'auto'` follows the reader's light or dark setting; `'light'` and `'dark'` force
+one). Without an `accent`, the library uses your page's `--overblast-accent` CSS variable when it
+sets one, so one line of CSS themes it:
+
+```css
+:root { --overblast-accent: #8a4b2a; }
+```
+
+### The sheet
+
+The kinds of report the key takes are at the top (none when it takes one), then a large message
+field, then pointing at the problem and the screenshot. Cancel and Send sit in a bar that never
+scrolls away; the sheet is never taller than the visible screen, its middle scrolls instead, and on
+phones it is a bottom sheet that stays above the on-screen keyboard. After Send, a check and
+"Sent, thank you" for a moment, and the sheet closes; when the team already has the issue the line
+says so instead. An error keeps the sheet open with the door's sentence.
+
+**Point at the problem** shows a one-line hint at the top of the page and outlines what is under the
+pointer; on a touch screen a tap shows what it would pick and asks first. Back in the sheet, the
+pick appears as a thumbnail (a crop of the screenshot around it when there is one, else a small card
+with its tag and text), with Change and Remove.
 
 ## The instance
 
@@ -156,6 +184,10 @@ The sheet tells the person, before they press Send, exactly what goes with their
 selected element, the screenshot, "logs from this session", and the page address and browser
 details.
 
+- **The person can hide parts of the screenshot.** Clicking the preview opens an editor where they
+  drag boxes that **cover** a region with a solid block or **blur** it, with Undo and Clear. The
+  edits are painted onto the image before it leaves the browser; the private masks are part of the
+  image underneath and cannot be taken off.
 - **The screenshot is opt-in, every time.** The box is unticked by default. When the person ticks
   it they see the image, and can remove it.
 - **Mark anything private** with `data-overblast-private` (or your own `privateSelector`):

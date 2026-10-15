@@ -4,6 +4,9 @@
  * unknown top-level field by name, so nothing here may grow a field the contract does not have.
  */
 
+import type { ThemeOptions } from './theme.ts';
+export type { ThemeOptions };
+
 /** Contract §8.1, as far as a browser can reach: the web is `registered` at best. */
 export type DeviceLevel = 'registered' | 'none';
 
@@ -144,6 +147,8 @@ export interface ReportResult {
   storageFull?: boolean;
   /** A short reference the team uses for the report (`R-1042`), when the door gives one. */
   reference?: string;
+  /** The report joined an issue the team already has (§3.3, §9). */
+  known?: boolean;
 }
 
 export type ButtonPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
@@ -195,6 +200,19 @@ export interface Labels {
   send: string;
   sending: string;
   sent: string;
+  /** After sending, when the door says the team already has this issue (§3.3 `known`). */
+  sentKnown: string;
+  cancel: string;
+  changeElement: string;
+  removeElementShort: string;
+  editShotHint: string;
+  editShot: string;
+  editorHint: string;
+  editorCover: string;
+  editorBlur: string;
+  editorUndo: string;
+  editorClear: string;
+  editorDone: string;
   draftKept: string;
   draftRestored: string;
   retry: string;
@@ -243,6 +261,11 @@ export interface InitOptions {
   onSent?: (result: ReportResult) => void;
   /** The `fetch` used to send. Default the page's own (unwrapped) `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * The sheet's look: `accent` (any CSS colour; default the page's `--overblast-accent`, else blue),
+   * `font` (a font-family list), `radius` (px) and `colorScheme` (`'auto'`, `'light'`, `'dark'`).
+   */
+  theme?: ThemeOptions;
   /**
    * The error prompt (§3.6), when the key's owner has switched it on. `false` keeps it off on this
    * site whatever the key says; nothing here can turn it on.

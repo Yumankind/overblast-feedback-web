@@ -32,6 +32,7 @@ interface Answer {
   field?: unknown;
   retryAfter?: unknown;
   reference?: unknown;
+  known?: unknown;
 }
 
 /** The body as the bytes that are both signed and sent: encoded once, so the two cannot differ. */
@@ -138,6 +139,7 @@ async function post(fetchImpl: typeof fetch, endpoint: string, key: string, byte
       taskId: answer.taskId as string,
       conversationId: typeof answer.conversationId === 'string' ? answer.conversationId : null,
       ...(typeof answer.reference === 'string' && answer.reference ? { reference: answer.reference } : {}),
+      ...(answer.known === true ? { known: true } : {}),
     };
   }
   // 507: the workspace is out of storage. The task is still filed, without the files (§3.3, §5.3).
