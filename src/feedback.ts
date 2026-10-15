@@ -434,14 +434,19 @@ export function init(options: InitOptions): FeedbackInstance {
           nudge: (kind) => {
             if (!chatPresent(win)) return null;
             const api = chatApi(win);
-            if (!api || typeof api.nudge !== 'function') return Promise.resolve(false);
+            const none = { shown: false };
+            if (!api || typeof api.nudge !== 'function') return Promise.resolve(none);
             try {
               return Promise.resolve(api.nudge({ text: labels.promptText, reason: kind })).then(
-                (r) => !!(r && (r as { shown?: unknown }).shown === true),
-                () => false,
+                (r) => {
+                  const a = (r ?? {}) as { shown?: unknown; outcome?: unknown };
+                  const outcome = a.outcome === 'tapped' || a.outcome === 'dismissed' ? a.outcome : 'expired';
+                  return { shown: a.shown === true, outcome };
+                },
+                () => none,
               );
             } catch {
-              return Promise.resolve(false);
+              return Promise.resolve(none);
             }
           },
         })

@@ -26,7 +26,7 @@ const sheetOpen = () => !!inSheet<HTMLElement>('.backdrop') && !inSheet<HTMLElem
 const decode = (b: Uint8Array) => JSON.parse(new TextDecoder().decode(b)) as FeedbackBody;
 
 /** A chat with a device of its own, a key that signs, and a record of what it was told. */
-async function fakeChat(opts: { device?: boolean; signThrows?: boolean; nudge?: 'shown' | 'declined' | 'none' } = {}) {
+async function fakeChat(opts: { device?: boolean; signThrows?: boolean; nudge?: 'shown' | 'declined' | 'none'; outcome?: 'tapped' | 'dismissed' | 'expired' | null } = {}) {
   const pair = (await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify'])) as CryptoKeyPair;
   const announced: Array<{ caps: FeedbackCapabilities; open: FeedbackOpener | undefined }> = [];
   const signed: string[] = [];
@@ -43,7 +43,8 @@ async function fakeChat(opts: { device?: boolean; signThrows?: boolean; nudge?: 
   if (opts.nudge !== 'none') {
     feedback.nudge = async (o: unknown) => {
       nudges.push(o);
-      return { shown: opts.nudge !== 'declined' };
+      const shown = opts.nudge !== 'declined';
+      return opts.outcome === null || !shown ? { shown } : { shown, outcome: opts.outcome ?? 'tapped' };
     };
   }
   return { api: { feedback }, pair, announced, signed, nudges };
@@ -215,12 +216,15 @@ test('announce: the capabilities and an opener; the opener prefills the sheet an
 
 const PROMPT_ON = { ...OPEN, errorPrompt: { enabled: true, on: ['exception'], minHoursBetween: 24 } };
 
+let nextStart = 1_760_440_000_000;
 async function withClock(config: Record<string, unknown>, chatOpts: Parameters<typeof fakeChat>[0]) {
   page('<main></main>');
   const chat = await fakeChat(chatOpts);
   w.InfiniteAgent = chat.api;
   const clock = new Clock();
-  clock.now = 1_760_440_000_000;
+  // Each session an hour after the last, as page loads would be.
+  clock.now = nextStart;
+  nextStart += 3600 * 1000;
   const d = chatDoor(config, chat.pair.publicKey);
   const o: InitOptions & { _promptClock: unknown } = { key: 'obfk_n', fetch: d.f, _promptClock: { now: () => clock.now, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout } };
   fb = init(o);
@@ -267,6 +271,53 @@ test('the chat declines, or offers no nudge: nothing at all, and not counted', a
     assert.equal(inSheet('.pill'), null, nudge);
     assert.equal(chat.nudges.length, nudge === 'declined' ? 1 : 0);
     assert.equal(localStorage.getItem('ob-feedback-prompt'), null, `${nudge}: not counted`);
+    fb!.destroy();
+    fb = null;
+    delete w.InfiniteAgent;
+  }
+});
+
+test('the nudge\'s outcome: dismissed counts toward the quiet days, expired (or none given) does not', async () => {
+  const shownOnce = async (outcome: 'dismissed' | 'expired' | null) => {
+    const { chat, clock } = await withClock({ ...PROMPT_ON, errorPrompt: { enabled: true, on: ['exception'], minHoursBetween: 0 } }, { nudge: 'shown', outcome });
+    clock.advance(10_000);
+    uncaught();
+    clock.advance(1);
+    await flush();
+    const n = chat.nudges.length;
+    await fb!.report({ message: 'what the log says' });
+    fb!.destroy();
+    fb = null;
+    delete w.InfiniteAgent;
+    return n;
+  };
+  const memory = () => JSON.parse(localStorage.getItem('ob-feedback-prompt') ?? '{}') as { dismissals?: number; quietUntil?: number };
+
+  assert.equal(await shownOnce('expired'), 1);
+  assert.equal(memory().dismissals, undefined, 'expired is not a close');
+  assert.equal(await shownOnce(null), 1);
+  assert.equal(memory().dismissals, undefined, 'no outcome reads as expired');
+  assert.equal(await shownOnce('dismissed'), 1);
+  assert.equal(memory().dismissals, 1);
+  assert.equal(await shownOnce('dismissed'), 1);
+  assert.ok(memory().quietUntil! > nextStart, 'two closes: seven quiet days');
+  assert.equal(await shownOnce('dismissed'), 0, 'quiet now: the chat is not even asked');
+});
+
+test('the nudge\'s outcome in the log', async () => {
+  for (const [outcome, line] of [
+    ['dismissed', 'error prompt dismissed'],
+    ['expired', 'error prompt went by itself'],
+  ] as const) {
+    localStorage.clear();
+    const { clock, d } = await withClock(PROMPT_ON, { nudge: 'shown', outcome });
+    clock.advance(10_000);
+    uncaught();
+    clock.advance(1);
+    await flush();
+    await fb!.report({ message: 'x' });
+    const msgs = d.embedReports.at(-1)!.body.logs!.map((l) => l.msg);
+    assert.ok(msgs.includes('error prompt shown') && msgs.includes(line), `${outcome}: ${line}`);
     fb!.destroy();
     fb = null;
     delete w.InfiniteAgent;

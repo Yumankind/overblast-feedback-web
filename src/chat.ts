@@ -55,7 +55,8 @@ export interface FeedbackPageApi {
   sign(canonical: string): Promise<string>;
   announce(caps: FeedbackCapabilities, open?: FeedbackOpener): void;
   open?(opts?: FeedbackOpenOptions): Promise<FeedbackOpenResult>;
-  nudge?(opts: { text: string; reason: ErrorKind }): Promise<{ shown: boolean }>;
+  /** Resolves once the bubble has gone (plan §5a). */
+  nudge?(opts: { text: string; reason: ErrorKind }): Promise<{ shown: boolean; outcome?: 'tapped' | 'dismissed' | 'expired' }>;
 }
 
 type ChatWindow = { InfiniteAgent?: { feedback?: Partial<FeedbackPageApi> } | null };

@@ -101,7 +101,7 @@ init({
 | `labels` | Any of the words the library shows. The full list and the English defaults are exported as `DEFAULT_LABELS`. |
 | `captureConsole`, `captureNetwork` | Turn the recording of console lines or of requests off. |
 | `fetch` | The `fetch` used to send the report. Defaults to your page's own, before the library wrapped it. |
-| `device` | `false` keeps device registration off on this site, whatever the key says. See [Device verification](#device-verification). |
+| `device` | `false` keeps the library's own device registration off on this site, whatever the key says (the site chat's device is still borrowed, see [With the site's chat](#with-the-sites-chat)). See [Device verification](#device-verification). |
 | `errorPrompt` | `false` keeps the [error prompt](#the-error-prompt) off on this site, whatever the key says. |
 | `appHosts` | Hosts besides the page's own whose 5xx answers and failed requests count for the error prompt: `api.example.com`, `*.example.com`, or an origin. |
 
@@ -278,13 +278,16 @@ the corner: the library hides its own, including when the chat loads later (it l
 - **Reports land in the visitor's conversation.** The library signs with the chat's device instead of
   its own, so the task points at the conversation and the conversation shows the task. When the chat
   has no device to lend (not registered yet, or "forget me"), or the door refuses it, the library's
-  own device is used and the report is filed as before.
+  own device is used and the report is filed as before. `device: false` turns off only the library's
+  own registration: the chat's device is still borrowed, since it costs the visitor nothing and is
+  what puts the report in their conversation.
 - **The chat can open the sheet.** The library tells the chat what this page can do (pointing at an
   element, a screenshot, shake, and the key's categories) and hands it the sheet: the chat's agent, or
   its "Report a problem" entry, opens it with the visitor's words. Nothing is sent until the visitor
   presses Send.
-- **The error prompt comes from the chat's launcher**, after the same rules as above. If the chat is
-  busy or offers no such prompt, nothing is shown.
+- **The error prompt comes from the chat's launcher**, after the same rules as above, and counts the
+  same way: closing the chat's bubble is a dismissal toward the seven quiet days, letting it go by
+  itself is not. If the chat is busy or offers no such prompt, nothing is shown.
 
 No setup: it happens when both are on the page.
 

@@ -40,6 +40,12 @@ export interface PromptClock {
   clearTimeout(handle: unknown): void;
 }
 
+/** What the chat's `nudge` answers once its bubble has gone. No outcome reads as `expired`. */
+export interface NudgeAnswer {
+  shown: boolean;
+  outcome?: 'tapped' | 'dismissed' | 'expired' | undefined;
+}
+
 export interface PromptDeps extends PromptClock {
   config(): KeyConfig;
   /** `errorPrompt: false` in `init`. */
@@ -58,10 +64,11 @@ export interface PromptDeps extends PromptClock {
   storage(): Storage | null;
   /**
    * With the site's chat on the page (feedback-chat-integration §5a): ask it to show the prompt from
-   * its own launcher, resolving with whether it did. Null when there is no chat, and the library draws
-   * its own pill. With a chat that offers no nudge, a promise of false: then nothing is shown at all.
+   * its own launcher. It resolves once the bubble has gone, saying whether it was shown and how it
+   * went. Null when there is no chat, and the library draws its own pill. With a chat that offers no
+   * nudge, `{ shown: false }`: then nothing is shown at all.
    */
-  nudge?: ((kind: ErrorKind) => Promise<boolean> | null) | undefined;
+  nudge?: ((kind: ErrorKind) => Promise<NudgeAnswer> | null) | undefined;
 }
 
 interface Memory {
@@ -173,13 +180,17 @@ export class ErrorPrompt {
     if (viaChat) {
       // The chat shows it, or declines (busy, or it offers no nudges): no pill either way. Still
       // pending meanwhile, so errors while it answers are the same prompt.
+      // It counts the same way as the pill: shown, then dismissed (toward the seven quiet days) or
+      // gone by itself (not). A tap opens the sheet through the opener, which logs the report.
       void viaChat.then(
-        (shown) => {
+        (answer) => {
           this.giveUp();
-          if (!shown || this.destroyed || this.shown) return;
+          if (!answer?.shown || this.destroyed || this.shown) return;
           this.shown = true;
           this.remember({ ...this.memory(), lastShown: this.d.now() });
           this.d.log('error prompt shown');
+          if (answer.outcome === 'dismissed') this.countDismissal();
+          else if (answer.outcome !== 'tapped') this.d.log('error prompt went by itself');
         },
         () => this.giveUp(),
       );
@@ -236,12 +247,17 @@ export class ErrorPrompt {
 
   private onClose(): void {
     if (!this.visible) return;
+    this.countDismissal();
+    this.takeDown();
+  }
+
+  /** A close without reporting: two in a row make seven quiet days. */
+  private countDismissal(): void {
     const m = this.memory();
     const dismissals = (m.dismissals ?? 0) + 1;
     if (dismissals >= PROMPT_DISMISSALS_FOR_QUIET) this.remember({ ...m, dismissals: 0, quietUntil: this.d.now() + PROMPT_QUIET_MS });
     else this.remember({ ...m, dismissals });
     this.d.log('error prompt dismissed');
-    this.takeDown();
   }
 
   private onReport(): void {

@@ -256,7 +256,7 @@ export interface InitOptions {
   /**
    * Register this browser as a device and sign each report with its key (contract §8), when the
    * key's verification is `flag` or `require`. Default `true`; `false` keeps it off whatever the key
-   * says. Where IndexedDB or WebCrypto is missing, reports go unsigned, as with `false`.
+   * says (the site chat's device is still borrowed: it costs nothing and links the conversation). Where IndexedDB or WebCrypto is missing, reports go unsigned, as with `false`.
    */
   device?: boolean;
 }
