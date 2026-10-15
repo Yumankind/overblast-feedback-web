@@ -7,11 +7,11 @@ the recent console lines and requests, the browser, your own id for that person,
 when they chose to attach one.
 
 ```sh
-npm i @overblast/feedback
+npm i @overblast/feedback@^0.2.0
 ```
 
-Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 20 KB
-gzipped.
+Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 27 KB
+gzipped, and an optional 1.5 KB recorder for `<head>` ([below](#catch-errors-from-the-first-line)).
 
 ---
 
@@ -39,7 +39,7 @@ opens the sheet, and shaking a phone does too.
 
 ```html
 <script
-  src="https://cdn.jsdelivr.net/npm/@overblast/feedback@0.1/dist/overblast-feedback.global.js"
+  src="https://cdn.jsdelivr.net/npm/@overblast/feedback@0.2/dist/overblast-feedback.global.js"
   data-key="obfk_your_key"
   defer
 ></script>
@@ -47,7 +47,7 @@ opens the sheet, and shaking a phone does too.
 
 With `data-key` the script starts itself. It also reads `data-endpoint`, `data-app-version`,
 `data-position` (`bottom-right`, `bottom-left`, `top-right`, `top-left`), `data-button="false"`,
-`data-shortcut` (`"false"` turns it off) and `data-shake="false"`. The started instance is
+`data-shortcut` (`"false"` turns it off), `data-shake="false"` and `data-device="false"`. The started instance is
 `window.OverblastFeedback.instance`.
 
 Without `data-key`, start it yourself:
@@ -83,6 +83,7 @@ init({
   captureConsole: true,
   captureNetwork: true,
   onSent: ({ id, taskId, conversationId }) => {},
+  device: true,                                     // register this browser and sign reports (see below)
 });
 ```
 
@@ -98,6 +99,7 @@ init({
 | `labels` | Any of the words the library shows. The full list and the English defaults are exported as `DEFAULT_LABELS`. |
 | `captureConsole`, `captureNetwork` | Turn the recording of console lines or of requests off. |
 | `fetch` | The `fetch` used to send the report. Defaults to your page's own, before the library wrapped it. |
+| `device` | Register this browser as a device and sign every report with its key. Default `true`. See [Device verification](#device-verification). |
 
 ## The instance
 
@@ -107,6 +109,7 @@ feedback.close();
 feedback.setReporter({ accountRef: 'cus_8812', email: 'ana@example.com' }); // after sign-in; null clears
 const anchor = await feedback.pick();   // let the person point at an element; null if they cancel
 await feedback.enableShake();     // iOS: ask for motion permission. Call it from a tap.
+await feedback.deviceLevel();     // 'registered' or 'none' (see Device verification)
 feedback.destroy();               // remove the button, the listeners and every wrapper
 ```
 
@@ -120,7 +123,7 @@ const { id, taskId, conversationId } = await feedback.report({
   screenshot: true,                      // capture now; or a Blob of your own
   reporter: { email: 'ana@example.com' },
   extra: { orderId: 'o_31' },
-  includeLogs: true,                     // false leaves out the console lines and the requests
+  includeLogs: true,                     // false leaves out the console lines, the log file and the requests
 });
 ```
 
@@ -152,8 +155,10 @@ details.
 - **The selected element's HTML** is its own tag only: the `id`, `class`, `role`, `name`, `type`,
   `href` and `aria-*` attributes, its own text, and `…` where its children were. Never the value of
   a field.
-- **Logs** are the last 500 console lines (`debug`, `info`, `log`, `warn`, `error`), uncaught errors
-  and unhandled rejections, each at most 4,000 characters. Before a line is stored, anything that
+- **Logs** are console lines (`debug`, `info`, `log`, `warn`, `error`), uncaught errors and unhandled
+  rejections, each at most 4,000 characters (see [Busy logs](#busy-logs) for how many). Recording
+  pauses while the sheet is open, so the sheet's own activity is never in the report. Before a line
+  is stored, anything that
   looks like a bearer token, an API key (`sk-…`, `sk_live_…`, `ob_live_…`, `obfk_…`, GitHub, Slack,
   AWS, Google), a JWT, a card number (Luhn-checked) or a `password=` / `token=` pair is replaced by
   `[redacted]`. Redaction catches what looks like a secret; it cannot know your data, so do not log
@@ -165,8 +170,10 @@ details.
 - **The page address** keeps its query string (the team often needs `?step=2`) but loses its
   fragment, and the values of parameters such as `token`, `key`, `code`, `access_token`, `state`
   and `password` are replaced by `[redacted]`.
-- **A device id** is a random value kept in `localStorage` under `ob-feedback-device`, used by the
-  door's per-device limits. It is not tied to anything else.
+- **A device id** is a random value kept in `localStorage` under `ob-feedback-device`, sent as
+  `context.deviceId`. It is not tied to anything else.
+- **A device key** (see below) is a key pair kept in IndexedDB (`overblast-feedback`, store
+  `device`). Only its public half and the signatures it makes leave the browser.
 
 ## The screenshot
 
@@ -221,23 +228,100 @@ remembers the yes under `localStorage` `ob-feedback-shake`, and a "No thanks" th
 If you would rather ask from your own settings screen, call `feedback.enableShake()` from that
 button's click handler.
 
+## Catch errors from the first line
+
+The library records from the moment `init` runs. Errors thrown before that (a script that failed in
+`<head>`, a crash while the page was still loading) happen before it exists. To keep them, put the
+early recorder first in `<head>`, before any other script, without `async` or `defer`:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@overblast/feedback@0.2/dist/overblast-feedback-early.global.js" data-fetch></script>
+```
+
+It is 1.5 KB gzipped and has no dependencies. It records `console.warn`, `console.error`, uncaught
+errors and unhandled rejections, and with `data-fetch` the requests that failed (thrown, or answered
+4xx/5xx), at most 200 lines, redacted by the same rules as the library. They wait on
+`window.__overblastFeedbackEarly`. When `init` runs, it takes them over with their original times,
+takes over the recorder's wrappers rather than wrapping them again, and removes the buffer; the
+recorder never restores anything itself.
+
+With a bundler, import it first in the earliest entry the page loads:
+
+```ts
+import { startEarly } from '@overblast/feedback/early';
+startEarly({ fetch: true });
+```
+
+## Busy logs
+
+A page can log far more, and far faster, than is worth sending. The library keeps it bounded:
+
+- **At most 50 lines a second** enter the buffer; warnings and errors still enter up to 200 a second.
+  Past that, lines are counted and dropped without being formatted or redacted, so a logging storm
+  costs the page very little, and one line (`1,204 lines dropped in 3 s (too fast)`) marks the gap.
+- **A line repeated** straight after itself is stored once, with the number of times it occurred
+  (`repeat`, the first included) and the time of the last one (`last`).
+- **The buffer holds up to 20,000 lines and 1 MB.** When it is full, the oldest debug and info lines
+  go first: an error from five minutes ago outlives a thousand debug lines from the last second.
+
+Each report carries two views of it. `logs` is an **excerpt** of at most 500 lines and 256 KB: every
+warning and error from the two minutes before the sheet opened, then the newest other lines. The
+**log file**, sent when the buffer holds more than the excerpt, is the whole buffer as gzip-compressed NDJSON (made with the browser's
+`CompressionStream`, uncompressed where there is none), attached to the task as
+`logs.ndjson.gz`. A report must fit in 8 MB, so when a screenshot leaves less room the oldest lines
+of the file are cut, and its first line says how many.
+
 ## What happens in Overblast
 
 Each report becomes a **task** in the workspace, titled from the first line of the message (`Bug:`,
 `Idea:`, `Question:`, `Feedback:`) and tagged `feedback`, with the category and the platform. The
 description carries the message, the reporter, your account reference, the page and the element in
-plain lines; the screenshot and a `feedback-report.json` (element, logs, requests, context) are
-attached to the task. If the key names a group, the task is assigned to it.
+plain lines, and the last error and failed request before the report was opened; the screenshot, a
+`feedback-report.json` (element, logs, requests, context) and the log file are attached to the
+task. If the key names a group, the task is assigned to it.
 
 **An email conversation exists only when the report carries an email address.** Even then, nothing
 is sent to that address when the report arrives (it is unverified, and anyone could type anyone's
 address): the thread opens when someone on the team replies from the task. Without an email there is
 nobody to answer, and no conversation.
 
+## Device verification
+
+No setup on your side: it is on by default, and the worker does the rest.
+
+The first time a report is about to be sent (in idle time once the sheet opens, or on the first
+`report()` call), the library makes an ECDSA P-256 key pair with WebCrypto, **non-extractable**, so
+the private half never leaves the browser's key store, not even to this library, and keeps it in
+IndexedDB. It registers the public half with the door once: it asks for a challenge, solves a small
+proof of work (a SHA-256 search in a Web Worker, so the page never janks; how long it takes depends
+on the difficulty the door sets, and it gives up after 20 seconds), and receives a device id. From then on every report carries
+three headers, `X-Overblast-Feedback-Device`, `X-Overblast-Feedback-Time` and
+`X-Overblast-Feedback-Signature`, a signature over the exact bytes of the body.
+
+What that buys: the door's per-device limits count a key that took work to make, rather than an id
+anyone can invent, and a registered browser gets the more generous limits below. What it does not
+buy is proof. A browser cannot prove it is a real browser driven by a real person, the way App
+Attest or Android key attestation lets a native app prove it is the genuine app on genuine
+hardware; the web's level is always `registered`, never `attested`. **It is a price, not a proof**:
+a script can pay the proof of work too, it just has to pay it for every device it pretends to be,
+and registrations are limited per address. Nor does a signed report say the person is honest.
+
+It never costs a report. With no IndexedDB or WebCrypto (some private windows, old browsers,
+sandboxed frames), a registration the door refuses or rate-limits, or a proof of work that runs too
+long, the report is sent unsigned. Send waits at most about 3 seconds for a registration still under
+way. If the door no longer knows the device, or refuses its signature, the library forgets it,
+registers a new one and sends once more. If your key is set to accept only registered devices
+(`verification: require`) and this browser could not register, the sheet shows the door's sentence.
+
+`feedback.deviceLevel()` says `registered` or `none`. `init({ device: false })` turns it all off.
+If your page sets a Content Security Policy, `worker-src blob:` lets the proof of work run in a
+worker; without it the work runs on the main thread in small slices.
+
 ## Limits and errors
 
-The door accepts at most 10 reports an hour and 30 a day per device, 30 an hour per IP, and the
-key's own daily cap. Refused with `429`, the sheet shows the door's sentence, **keeps the draft** on
+The door's limits depend on whether the report is signed. Signed by a registered device: at most 10
+reports an hour and 30 a day per device, and 30 an hour per IP. Unsigned: 10 an hour per IP. The
+key's own daily cap applies either way. Refused with `429`, the sheet shows the door's sentence, **keeps the draft** on
 the device (message, category, email and element, under `localStorage` `ob-feedback-draft`) and
 offers to send it again; it never retries in a loop. The same happens when the connection drops or
 the door answers `5xx`. A revoked key (`401`), a disallowed origin or disabled key (`403`) and a

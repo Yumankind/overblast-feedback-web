@@ -9,8 +9,10 @@
 
 import { Capture } from './capture.ts';
 import { collectContext, safeStorage } from './context.ts';
+import { DeviceClient } from './device.ts';
 import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
 import { DEFAULT_LABELS } from './labels.ts';
+import { attachLogFile } from './logfile.ts';
 import { FeedbackError, buildBody, cleanExtra } from './payload.ts';
 import { blobToBase64, finishHookBlob, planShot, takeScreenshot, type Shot } from './screenshot.ts';
 import { DEFAULT_ENDPOINT, sendReport } from './transport.ts';
@@ -24,7 +26,7 @@ import {
   parseShortcut,
   requestMotion,
 } from './triggers.ts';
-import type { DomElement, FeedbackInstance, InitOptions, ReportInput, ReportResult, Reporter } from './types.ts';
+import type { DomElement, FeedbackInstance, InitOptions, ReportInput, ReportResult, Reporter, Trigger } from './types.ts';
 import { FeedbackUi, type SheetValues } from './ui.ts';
 
 /** `granted` | `denied` | `dismissed`: what became of the one-time shake offer on iOS. */
@@ -89,6 +91,44 @@ export function init(options: InitOptions): FeedbackInstance {
     return r ?? undefined;
   };
 
+  // ── The device (contract §8) ───────────────────────────────────────────────────────────────
+  // Made on first use, never at init and never without a DOM: server rendering must not reach
+  // IndexedDB, and a page that never reports never makes a key.
+  const deviceWanted = options.device !== false && hasDom;
+  let device: DeviceClient | null = null;
+  const getDevice = (): DeviceClient | null => {
+    if (!deviceWanted || destroyed) return null;
+    if (!device) {
+      try {
+        device = new DeviceClient({ endpoint, key, fetch: sendFetch });
+      } catch {
+        return null;
+      }
+    }
+    return device;
+  };
+  let idleHandle: { cancel: () => void } | null = null;
+  /** Register in idle time once the sheet is open, so it is usually done before Send is pressed. */
+  const registerWhenIdle = () => {
+    if (!deviceWanted || destroyed || idleHandle) return;
+    const run = () => {
+      idleHandle = null;
+      getDevice()?.start();
+    };
+    const w = win as (Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }) | undefined;
+    if (w && typeof w.requestIdleCallback === 'function') {
+      const h = w.requestIdleCallback(run, { timeout: 1500 });
+      idleHandle = { cancel: () => w.cancelIdleCallback?.(h) };
+    } else {
+      const h = setTimeout(run, 300);
+      idleHandle = { cancel: () => clearTimeout(h) };
+    }
+  };
+  cleanups.push(() => {
+    idleHandle?.cancel();
+    idleHandle = null;
+  });
+
   const sendFetch = (): typeof fetch => {
     const f = options.fetch ?? capture.originalFetch ?? (typeof fetch === 'function' ? fetch : undefined);
     if (!f) throw new FeedbackError(-1, 'no_fetch', 'There is no fetch to send the report with.');
@@ -101,25 +141,32 @@ export function init(options: InitOptions): FeedbackInstance {
     return takeScreenshot(doc, privateSelector, selected, options.captureScreenshot);
   }
 
-  async function send(input: ReportInput, element: DomElement | undefined, shot: Shot | null): Promise<ReportResult> {
+  async function send(input: ReportInput, element: DomElement | undefined, shot: Shot | null, opened: { at: number; trigger: Trigger }): Promise<ReportResult> {
     if (destroyed) throw new FeedbackError(-1, 'destroyed', 'This feedback instance was destroyed.');
     const extra = cleanExtra({ ...(options.extra ?? {}), ...(input.extra ?? {}) });
     const withLogs = input.includeLogs !== false;
+    const context = collectContext({ appVersion: options.appVersion, build: options.build, locale: options.locale, extra });
+    context.openedAt = opened.at;
+    context.trigger = opened.trigger;
+    const lines = withLogs ? capture.logs.list() : [];
     const body = buildBody({
       message: input.message,
       category: input.category,
       reporter: { ...(reporter() ?? {}), ...(input.reporter ?? {}) },
-      context: collectContext({ appVersion: options.appVersion, build: options.build, locale: options.locale, extra }),
+      context,
       element,
       screenshot: shot ? { contentType: shot.contentType, base64: await blobToBase64(shot.blob), highlighted: shot.highlighted } : undefined,
-      logs: withLogs ? capture.logs.list() : undefined,
+      logs: withLogs ? lines : undefined,
       network: withLogs ? capture.network.list() : undefined,
     });
-    return sendReport(sendFetch(), endpoint, key, body);
+    // The whole buffer as a file (§3.5), in the room the rest of the body leaves.
+    await attachLogFile(body, lines);
+    return sendReport(sendFetch(), endpoint, key, body, { device: getDevice() });
   }
 
   async function report(input: ReportInput): Promise<ReportResult> {
     if (destroyed) throw new FeedbackError(-1, 'destroyed', 'This feedback instance was destroyed.');
+    const opened = { at: Date.now(), trigger: (input.trigger === 'agent' ? 'agent' : 'api') as Trigger };
     let element: DomElement | undefined;
     let selected: Element | null = null;
     if (isDomAnchor(input.element)) element = input.element;
@@ -132,7 +179,7 @@ export function init(options: InitOptions): FeedbackInstance {
     else if (input.screenshot && typeof (input.screenshot as Blob).arrayBuffer === 'function' && doc) {
       shot = await finishHookBlob(doc, input.screenshot as Blob, planShot(doc, privateSelector, selected));
     }
-    return send(input, element, shot);
+    return send(input, element, shot, opened);
   }
 
   // ── Shake ──────────────────────────────────────────────────────────────────────────────────
@@ -149,7 +196,7 @@ export function init(options: InitOptions): FeedbackInstance {
     const onMotion = (e: DeviceMotionEvent) => {
       const a = e.accelerationIncludingGravity ?? e.acceleration;
       if (!a) return;
-      if (detector.sample(a.x ?? NaN, a.y ?? NaN, a.z ?? NaN, Date.now()) && ui && !ui.isOpen && !ui.isPicking) ui.open();
+      if (detector.sample(a.x ?? NaN, a.y ?? NaN, a.z ?? NaN, Date.now()) && ui && !ui.isOpen && !ui.isPicking) ui.open('shake');
     };
     win.addEventListener('devicemotion', onMotion);
     cleanups.push(() => win.removeEventListener('devicemotion', onMotion));
@@ -177,6 +224,13 @@ export function init(options: InitOptions): FeedbackInstance {
       needsEmail: () => !reporter()?.email,
       takeScreenshot: screenshotFor,
       submit: reportFromSheet,
+      onOpen: () => {
+        capture.paused = true;
+        registerWhenIdle();
+      },
+      onClose: () => {
+        capture.paused = false;
+      },
       onButtonGesture: () => {
         // iOS forgets the motion grant between page loads but answers a repeat request silently,
         // from a tap. This is a tap.
@@ -195,7 +249,7 @@ export function init(options: InitOptions): FeedbackInstance {
   function reportFromSheet(v: SheetValues): Promise<ReportResult> {
     const input: ReportInput = { message: v.message, category: v.category };
     if (v.email) input.reporter = { email: v.email };
-    return send(input, v.anchor ?? undefined, v.shot);
+    return send(input, v.anchor ?? undefined, v.shot, { at: v.openedAt ?? Date.now(), trigger: v.trigger });
   }
 
   if (doc) {
@@ -218,7 +272,7 @@ export function init(options: InitOptions): FeedbackInstance {
         if (e.defaultPrevented || e.repeat || !matchShortcut(shortcut, e)) return;
         e.preventDefault();
         if (ui?.isOpen) ui.close();
-        else ui?.open();
+        else ui?.open('shortcut');
       };
       win.addEventListener('keydown', onKey);
       cleanups.push(() => win.removeEventListener('keydown', onKey));
@@ -226,7 +280,7 @@ export function init(options: InitOptions): FeedbackInstance {
   }
 
   const instance: FeedbackInstance = {
-    open: () => ui?.open(),
+    open: (o) => ui?.open(o?.trigger === 'agent' ? 'agent' : 'api'),
     close: () => ui?.close(),
     async pick() {
       if (!ui) return null;
@@ -238,6 +292,10 @@ export function init(options: InitOptions): FeedbackInstance {
     },
     report,
     enableShake,
+    async deviceLevel() {
+      const d = getDevice();
+      return d ? d.level() : 'none';
+    },
     destroy() {
       if (destroyed) return;
       destroyed = true;

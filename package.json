@@ -1,6 +1,6 @@
 {
   "name": "@overblast/feedback",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A feedback button, shortcut and shake for any website: the person says what is wrong, points at it, and the report lands in your Overblast workspace as a task with the element, the logs and the device.",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,11 +13,18 @@
       "import": "./dist/index.js"
     },
     "./global": "./dist/overblast-feedback.global.js",
+    "./early": {
+      "types": "./dist/early.d.ts",
+      "import": "./dist/early.js"
+    },
+    "./early/global": "./dist/overblast-feedback-early.global.js",
     "./package.json": "./package.json"
   },
   "sideEffects": [
     "./dist/global.js",
-    "./dist/overblast-feedback.global.js"
+    "./dist/overblast-feedback.global.js",
+    "./dist/early-global.js",
+    "./dist/overblast-feedback-early.global.js"
   ],
   "files": [
     "dist",
@@ -62,6 +69,7 @@
     "@happy-dom/global-registrator": "^21.0.1",
     "@types/node": "^25.5.2",
     "esbuild": "^0.28.2",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.9.3"
   },
   "packageManager": "pnpm@11.9.0"

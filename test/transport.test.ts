@@ -35,7 +35,7 @@ test('201: the ids, and the request as the contract spells it', async () => {
   assert.equal(h[KEY_HEADER], 'obfk_abc');
   assert.equal(h['Content-Type'], 'application/json');
   assert.equal(calls[0]!.init.credentials, 'omit');
-  assert.deepEqual(JSON.parse(calls[0]!.init.body as string), body);
+  assert.deepEqual(JSON.parse(new TextDecoder().decode(calls[0]!.init.body as Uint8Array)), body);
 });
 
 test('201 with a conversation', async () => {

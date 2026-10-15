@@ -10,7 +10,7 @@ import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
 import { FeedbackError, isEmail } from './payload.ts';
 import type { Shot } from './screenshot.ts';
 import { BUG_ICON, CSS } from './styles.ts';
-import type { ButtonPosition, Category, DomElement, Labels, ReportResult } from './types.ts';
+import type { ButtonPosition, Category, DomElement, Labels, ReportResult, Trigger } from './types.ts';
 
 export const HOST_TAG = 'overblast-feedback';
 export const HOST_ATTR = 'data-overblast-feedback';
@@ -22,6 +22,10 @@ export interface SheetValues {
   element: Element | null;
   anchor: DomElement | null;
   shot: Shot | null;
+  /** When the sheet last appeared, ms since the epoch (§3.4). */
+  openedAt: number | null;
+  /** What opened it. */
+  trigger: Trigger;
 }
 
 export interface UiDeps {
@@ -33,6 +37,10 @@ export interface UiDeps {
   needsEmail(): boolean;
   takeScreenshot(selected: Element | null): Promise<Shot | null>;
   submit(values: SheetValues): Promise<ReportResult>;
+  /** Called each time the sheet opens (collection pauses, the device registers in idle time). */
+  onOpen?: (() => void) | undefined;
+  /** Called when the sheet closes (collection resumes). */
+  onClose?: (() => void) | undefined;
   /** Called inside the button's click handler, which is a user gesture (iOS motion permission). */
   onButtonGesture(): void;
   shake: {
@@ -73,7 +81,9 @@ export class FeedbackUi {
   private fab: HTMLButtonElement | null = null;
   private backdrop: HTMLDivElement | null = null;
   private returnFocus: Element | null = null;
-  private values: SheetValues = { message: '', category: 'bug', email: undefined, element: null, anchor: null, shot: null };
+  private values: SheetValues = { message: '', category: 'bug', email: undefined, element: null, anchor: null, shot: null, openedAt: null, trigger: 'api' };
+  /** Between `open` and `close`, whatever the backdrop does meanwhile (it hides for the picker and the screenshot). */
+  private session = false;
   private shotUrl: string | null = null;
   private busy = false;
   private picking: { finish: (el: Element | null) => void } | null = null;
@@ -110,7 +120,7 @@ export class FeedbackUi {
     b.setAttribute('aria-haspopup', 'dialog');
     b.addEventListener('click', () => {
       this.deps.onButtonGesture();
-      this.open();
+      this.open('button');
     });
     this.root.appendChild(b);
     this.fab = b;
@@ -118,11 +128,13 @@ export class FeedbackUi {
 
   // ── The sheet ───────────────────────────────────────────────────────────────────────────────
 
-  open(): void {
+  open(trigger: Trigger = 'api'): void {
     if (this.destroyed || this.picking) return;
     if (!this.backdrop) this.buildSheet();
     const backdrop = this.backdrop!;
     if (!backdrop.hidden) return;
+    this.values.openedAt = Date.now();
+    this.values.trigger = trigger;
     this.returnFocus = this.doc.activeElement;
     this.setStatus('', 'info');
     if (!this.values.message) {
@@ -138,6 +150,12 @@ export class FeedbackUi {
     }
     this.render();
     backdrop.hidden = false;
+    this.session = true;
+    try {
+      this.deps.onOpen?.();
+    } catch {
+      /* the sheet is open either way */
+    }
     if (this.fab) this.fab.setAttribute('aria-expanded', 'true');
     this.q<HTMLTextAreaElement>('textarea')?.focus();
   }
@@ -145,6 +163,7 @@ export class FeedbackUi {
   close(): void {
     if (!this.backdrop || this.backdrop.hidden) return;
     this.backdrop.hidden = true;
+    this.endSession();
     if (this.fab) this.fab.setAttribute('aria-expanded', 'false');
     const back = this.returnFocus as HTMLElement | null;
     this.returnFocus = null;
@@ -478,7 +497,9 @@ export class FeedbackUi {
 
   private reset(): void {
     this.setShot(null);
-    this.values = { message: '', category: 'bug', email: this.values.email, element: null, anchor: null, shot: null };
+    // Still the same opening of the sheet: `openedAt` and `trigger` stay.
+    const { openedAt, trigger } = this.values;
+    this.values = { message: '', category: 'bug', email: this.values.email, element: null, anchor: null, shot: null, openedAt, trigger };
     this.render();
   }
 
@@ -632,9 +653,20 @@ export class FeedbackUi {
     });
   }
 
+  private endSession(): void {
+    if (!this.session) return;
+    this.session = false;
+    try {
+      this.deps.onClose?.();
+    } catch {
+      /* closed either way */
+    }
+  }
+
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.endSession();
     this.picking?.finish(null);
     this.setShot(null);
     this.host.remove();

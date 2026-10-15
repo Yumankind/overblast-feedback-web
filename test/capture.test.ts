@@ -69,10 +69,11 @@ function fakeWindow() {
   return { win, seen, con, FakeXhr };
 }
 
-function installed(opts: { console?: boolean; network?: boolean } = {}) {
+function installed(opts: { console?: boolean; network?: boolean; step?: number } = {}) {
   const f = fakeWindow();
   let now = 1_000;
-  const cap = new Capture({ console: opts.console ?? true, network: opts.network ?? true, ignoreUrl: 'https://brain.deployd.network/v1/feedback', now: () => (now += 5) });
+  const step = opts.step ?? 5;
+  const cap = new Capture({ console: opts.console ?? true, network: opts.network ?? true, ignoreUrl: 'https://brain.deployd.network/v1/feedback', now: () => (now += step) });
   cap.install(f.win as unknown as Window & typeof globalThis);
   return { ...f, cap };
 }
@@ -94,13 +95,15 @@ test('console: transparent (arguments, this, return value, throws) and recorded,
   assert.deepEqual(cap.logs.list().map((l) => l.level), ['info', 'error', 'debug', 'warn']);
 });
 
-test('console: the ring keeps the last 500 lines, each at most 4000 characters', () => {
-  const { win, cap } = installed();
+test('console: each line at most 4000 characters; the buffer holds far more than the excerpt', () => {
+  // 25 ms a line: 40 a second, under the intake cap, so every line is kept.
+  const { win, cap } = installed({ step: 25 });
   for (let i = 0; i < 700; i++) win.console.info(`line ${i}`);
   win.console.info('x'.repeat(10_000));
   const logs = cap.logs.list();
-  assert.equal(logs.length, MAX_LOGS);
-  assert.equal(logs[0]!.msg, 'line 201');
+  assert.equal(logs.length, 701);
+  assert.ok(logs.length > MAX_LOGS);
+  assert.equal(logs[0]!.msg, 'line 0');
   assert.equal(logs.at(-1)!.msg.length, 4000);
 });
 

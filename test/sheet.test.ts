@@ -16,7 +16,7 @@ interface Call {
 function door(status = 201, answer: unknown = { id: 'fbr_1', taskId: 'todo_1', conversationId: null }) {
   const calls: Call[] = [];
   const f = (async (url: string, init: RequestInit) => {
-    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(init.body as string) as FeedbackBody });
+    calls.push({ url, headers: init.headers as Record<string, string>, body: JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as FeedbackBody });
     return new Response(JSON.stringify(answer), { status, headers: { 'Content-Type': 'application/json' } });
   }) as unknown as typeof fetch;
   return { f, calls };
@@ -97,7 +97,7 @@ test('the button opens the sheet; Send files the report the contract describes',
   assert.equal(body.context.url, 'https://shop.example.com/cart?step=2&token=[redacted]');
   assert.equal(body.context.appVersion, '2.4.1');
   assert.deepEqual(body.context.extra, { plan: 'pro' });
-  assert.deepEqual(body.context.sdk, { name: 'overblast-feedback-web', version: '0.1.0' });
+  assert.deepEqual(body.context.sdk, { name: 'overblast-feedback-web', version: '0.2.0' });
   assert.match(body.context.deviceId!, /^[a-f0-9]{32}$/);
   assert.equal(localStorage.getItem('ob-feedback-device'), body.context.deviceId);
   assert.ok(body.logs!.some((l) => l.level === 'warn' && l.msg === 'the total is wrong, token=[redacted]'));

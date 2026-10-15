@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { BODY_FIELDS, base64Bytes, buildBody, capLogs, capNetwork, cleanElement, FeedbackError, MAX_LOG_BYTES, utf8Length } from '../src/payload.ts';
 import type { DomElement, LogEntry, NetworkEntry } from '../src/types.ts';
 
-const ctx = { platform: 'web' as const, url: 'https://a.example/x?y=1', sdk: { name: 'overblast-feedback-web', version: '0.1.0' }, deviceId: 'abc_123' };
+const ctx = { platform: 'web' as const, url: 'https://a.example/x?y=1', sdk: { name: 'overblast-feedback-web', version: '0.2.0' }, deviceId: 'abc_123' };
 
 test('the smallest body is exactly v, message, category, context', () => {
   const body = buildBody({ message: '  The total does not update  ', context: ctx });
@@ -26,16 +26,19 @@ test('a full body has only the contract\'s top-level fields and its nested field
     message: 'x',
     category: 'idea',
     reporter: { email: 'ana@example.com', name: 'Ana', accountRef: 'cus_1' },
-    context: { ...ctx, title: 'Cart', appVersion: '2.4.1', build: '412', locale: 'pt-PT', timeZone: 'Europe/Lisbon', viewport: { w: 393, h: 852, dpr: 3 }, userAgent: 'UA', extra: { plan: 'pro' } },
+    context: { ...ctx, title: 'Cart', appVersion: '2.4.1', build: '412', locale: 'pt-PT', timeZone: 'Europe/Lisbon', viewport: { w: 393, h: 852, dpr: 3 }, userAgent: 'UA', extra: { plan: 'pro' }, openedAt: 1760440000000.4, trigger: 'shake' },
     element,
     screenshot: { contentType: 'image/jpeg', base64: 'AAAA', highlighted: true },
     logs: [{ t: 1, level: 'error', msg: 'boom', src: 'console' }],
     network: [{ t: 2, method: 'post', url: 'https://api.example/x', status: 500, ms: 31.6 }],
   });
   for (const k of Object.keys(body)) assert.ok((BODY_FIELDS as readonly string[]).includes(k), `unknown top-level field ${k}`);
-  assert.deepEqual(Object.keys(body).sort(), [...BODY_FIELDS].sort());
+  // `logFile` is added after the body is built, once the room the rest leaves is known.
+  assert.deepEqual(Object.keys(body).sort(), BODY_FIELDS.filter((f) => f !== 'logFile').sort());
+  assert.equal(body.context.openedAt, 1760440000000);
+  assert.equal(body.context.trigger, 'shake');
   assert.deepEqual(Object.keys(body.reporter!).sort(), ['accountRef', 'email', 'name']);
-  assert.deepEqual(Object.keys(body.context).sort(), ['appVersion', 'build', 'deviceId', 'extra', 'locale', 'platform', 'sdk', 'timeZone', 'title', 'url', 'userAgent', 'viewport']);
+  assert.deepEqual(Object.keys(body.context).sort(), ['appVersion', 'build', 'deviceId', 'extra', 'locale', 'openedAt', 'platform', 'sdk', 'timeZone', 'title', 'trigger', 'url', 'userAgent', 'viewport']);
   assert.deepEqual(Object.keys(body.element!).sort(), ['html', 'kind', 'label', 'rect', 'role', 'selector', 'tag', 'textQuote', 'viewport']);
   assert.deepEqual(Object.keys(body.screenshot!).sort(), ['base64', 'contentType', 'highlighted']);
   assert.deepEqual(body.network, [{ t: 2, method: 'POST', url: 'https://api.example/x', status: 500, ms: 32 }]);

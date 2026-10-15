@@ -17,6 +17,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      fake-indexeddb:
+        specifier: ^6.2.5
+        version: 6.2.5
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -205,6 +208,10 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  fake-indexeddb@6.2.5:
+    resolution: {integrity: sha512-CGnyrvbhPlWYMngksqrSSUT1BAVP49dZocrHuK0SvtR0D5TMs5wP0o3j7jexDJW01KSadjBp1M/71o/KR3nD1w==}
+    engines: {node: '>=18'}
+
   happy-dom@21.0.1:
     resolution: {integrity: sha512-pRBs/u9fhrncyByOl58DMex0R2uAj6ZPKWIjV5j5yNGZBqLw3P6BTRhlc0DD5b/Ht4/6JYTMuE2LJhUWRC6SGw==}
     engines: {node: '>=20.0.0'}
@@ -365,6 +372,8 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
+
+  fake-indexeddb@6.2.5: {}
 
   happy-dom@21.0.1:
     dependencies:

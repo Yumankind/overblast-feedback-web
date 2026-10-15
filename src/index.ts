@@ -23,6 +23,7 @@ export { SDK_NAME, SDK_VERSION as version } from './version.ts';
 export type {
   ButtonPosition,
   Category,
+  DeviceLevel,
   DomElement,
   FeedbackBody,
   FeedbackContext,
@@ -30,11 +31,13 @@ export type {
   InitOptions,
   Labels,
   LogEntry,
+  LogFileBody,
   LogLevel,
   NetworkEntry,
   ReportInput,
   ReportResult,
   Reporter,
+  Trigger,
   TriggerOptions,
 } from './types.ts';
 

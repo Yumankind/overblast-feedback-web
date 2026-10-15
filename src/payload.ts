@@ -5,9 +5,10 @@
  */
 
 import { MAX_LOGS, MAX_LOG_MSG, MAX_NETWORK } from './capture.ts';
+import { utf8Length } from './redact.ts';
 import { MAX_HTML, MAX_LABEL, MAX_QUOTE_CONTEXT, MAX_QUOTE } from './element.ts';
 import { selectorWithinLimits } from './selector.ts';
-import type { Category, DomElement, FeedbackBody, FeedbackContext, LogEntry, NetworkEntry, Reporter, ScreenshotBody } from './types.ts';
+import type { Category, DomElement, FeedbackBody, FeedbackContext, LogEntry, NetworkEntry, Reporter, ScreenshotBody, Trigger } from './types.ts';
 
 export const MAX_MESSAGE = 4000;
 export const MAX_LOG_BYTES = 256 * 1024;
@@ -15,9 +16,10 @@ export const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
 export const MAX_EXTRA_KEYS = 20;
 export const CATEGORIES: readonly Category[] = ['bug', 'idea', 'question', 'other'];
 const LEVELS = new Set(['debug', 'info', 'warn', 'error']);
+const TRIGGERS: readonly Trigger[] = ['shake', 'button', 'shortcut', 'agent', 'api', 'relaunch'];
 
 /** The top-level fields contract §3.1 names. Anything else is a bug in this file. */
-export const BODY_FIELDS = ['v', 'message', 'category', 'reporter', 'context', 'element', 'screenshot', 'logs', 'network'] as const;
+export const BODY_FIELDS = ['v', 'message', 'category', 'reporter', 'context', 'element', 'screenshot', 'logs', 'logFile', 'network'] as const;
 
 export class FeedbackError extends Error {
   /** The HTTP status; 0 when the request never got an answer, -1 when refused before sending. */
@@ -46,19 +48,7 @@ export function isEmail(s: string): boolean {
   return s.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
-export function utf8Length(s: string): number {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c < 0x80) n += 1;
-    else if (c < 0x800) n += 2;
-    else if (c >= 0xd800 && c <= 0xdbff) {
-      n += 4;
-      i++;
-    } else n += 3;
-  }
-  return n;
-}
+export { utf8Length };
 
 export function cleanReporter(r: Reporter | null | undefined): Reporter | undefined {
   if (!r) return undefined;
@@ -105,6 +95,8 @@ export function cleanContext(c: FeedbackContext): FeedbackContext {
   if (c.deviceId && /^[A-Za-z0-9_-]{1,64}$/.test(c.deviceId)) out.deviceId = c.deviceId;
   const extra = cleanExtra(c.extra);
   if (extra) out.extra = extra;
+  if (typeof c.openedAt === 'number' && Number.isFinite(c.openedAt) && c.openedAt > 0) out.openedAt = Math.round(c.openedAt);
+  if (c.trigger && TRIGGERS.includes(c.trigger)) out.trigger = c.trigger;
   return out;
 }
 
@@ -139,11 +131,55 @@ export function cleanElement(e: DomElement | null | undefined): DomElement | und
   return out;
 }
 
+/** One entry as the door takes it: `t`, `level`, `msg` ≤ 4000, `src` ≤ 40, and `repeat`/`last` when set. */
+export function cleanLog(l: LogEntry): LogEntry {
+  const out: LogEntry = { t: Math.round(l.t), level: l.level, msg: cut(l.msg, MAX_LOG_MSG), src: cut(l.src || 'console', 40) };
+  if (typeof l.repeat === 'number' && l.repeat > 1) out.repeat = Math.round(l.repeat);
+  if (typeof l.last === 'number' && Number.isFinite(l.last)) out.last = Math.round(l.last);
+  return out;
+}
+
+const isLog = (l: LogEntry) => !!l && typeof l.msg === 'string' && typeof l.t === 'number' && LEVELS.has(l.level);
+
+/** Errors and warnings this long before `openedAt` are always in the excerpt, room allowing (§3.5). */
+export const EXCERPT_URGENT_WINDOW_MS = 2 * 60 * 1000;
+
+/**
+ * The excerpt sent as `logs` (§3.5): at most 500 entries and 256 KB, chosen as every error and
+ * warning in the two minutes before `openedAt` (the newest first if even they do not all fit), then
+ * the newest other lines up to the cap. Returned in the buffer's order.
+ */
+export function excerpt(logs: LogEntry[], openedAt?: number): LogEntry[] {
+  const all = logs.filter(isLog).map(cleanLog);
+  const at = typeof openedAt === 'number' && Number.isFinite(openedAt) ? openedAt : (all.at(-1)?.t ?? 0);
+  const budget = MAX_LOG_BYTES - 1024;
+  let bytes = 2;
+  let count = 0;
+  const chosen = new Uint8Array(all.length);
+  const take = (i: number): boolean => {
+    if (count >= MAX_LOGS) return false;
+    const size = utf8Length(JSON.stringify(all[i])) + 1;
+    if (bytes + size > budget) return true; // too big to fit now; a smaller one still might
+    bytes += size;
+    count++;
+    chosen[i] = 1;
+    return true;
+  };
+  for (let i = all.length - 1; i >= 0; i--) {
+    const l = all[i]!;
+    if ((l.level === 'error' || l.level === 'warn') && l.t <= at && l.t >= at - EXCERPT_URGENT_WINDOW_MS) {
+      if (!take(i)) break;
+    }
+  }
+  for (let i = all.length - 1; i >= 0 && count < MAX_LOGS && bytes < budget - 64; i--) {
+    if (!chosen[i]) take(i);
+  }
+  return all.filter((_, i) => chosen[i] === 1);
+}
+
 /** The newest entries that fit both caps: 500 lines and 256 KB of JSON. */
 export function capLogs(logs: LogEntry[]): LogEntry[] {
-  const clean = logs
-    .filter((l) => l && typeof l.msg === 'string' && LEVELS.has(l.level))
-    .map((l) => ({ t: Math.round(l.t), level: l.level, msg: cut(l.msg, MAX_LOG_MSG), src: cut(l.src || 'console', 40) }));
+  const clean = logs.filter(isLog).map(cleanLog);
   const newest = clean.slice(-MAX_LOGS);
   // A margin under the door's 256 KB, for the brackets and commas and whatever it counts as a KB.
   const budget = MAX_LOG_BYTES - 1024;
@@ -203,7 +239,7 @@ export function buildBody(input: BodyInput): FeedbackBody {
     }
     body.screenshot = { contentType: s.contentType, base64: s.base64, highlighted: !!s.highlighted };
   }
-  const logs = input.logs ? capLogs(input.logs) : [];
+  const logs = input.logs ? excerpt(input.logs, body.context.openedAt) : [];
   if (logs.length) body.logs = logs;
   const network = input.network ? capNetwork(input.network) : [];
   if (network.length) body.network = network;

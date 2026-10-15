@@ -8,12 +8,20 @@
  * over ours since, ours stays in the chain as a pass-through instead, so their wrapper keeps working.
  */
 
-import { networkUrl, redact } from './redact.ts';
-import type { LogEntry, LogLevel, NetworkEntry } from './types.ts';
+import { LogBuffer } from './logbuffer.ts';
+import { MAX_LOG_MSG, cleanMessage, networkUrl } from './redact.ts';
+import type { EarlyBuffer, LogLevel, NetworkEntry } from './types.ts';
 
+export { MAX_LOG_MSG, cleanMessage };
+/** The excerpt's cap (`logs` in the body); the buffer itself holds far more (§3.5). */
 export const MAX_LOGS = 500;
-export const MAX_LOG_MSG = 4000;
 export const MAX_NETWORK = 100;
+/**
+ * Where `@overblast/feedback/early` leaves what it caught. Spelled again in `early.ts` rather than
+ * imported, so the library's module graph never reaches the early recorder's bundle (a test keeps
+ * the two equal).
+ */
+export const EARLY_KEY = '__overblastFeedbackEarly';
 
 /** A fixed-size ring: the newest `size` items, oldest first. */
 export class Ring<T> {
@@ -72,12 +80,6 @@ export function formatValue(value: unknown, depth = 0): string {
   }
 }
 
-/** Redact first, then cut, so a cut can never leave half a token that no longer matches. */
-export function cleanMessage(text: string): string {
-  const pre = text.length > MAX_LOG_MSG * 4 ? text.slice(0, MAX_LOG_MSG * 4) : text;
-  const out = redact(pre);
-  return out.length > MAX_LOG_MSG ? `${out.slice(0, MAX_LOG_MSG - 1)}…` : out;
-}
 
 const CONSOLE_LEVELS: Array<[keyof Console & ('debug' | 'info' | 'log' | 'warn' | 'error'), LogLevel]> = [
   ['debug', 'debug'],
@@ -127,8 +129,10 @@ function patch<T extends object>(target: T, name: string, make: (original: AnyFn
 }
 
 export class Capture {
-  readonly logs = new Ring<LogEntry>(MAX_LOGS);
+  /** The log buffer (§3.5): rate-capped, repeats collapsed, 1 MB / 20,000 lines. */
+  readonly logs: LogBuffer;
   readonly network = new Ring<NetworkEntry>(MAX_NETWORK);
+  private pausedFlag = false;
   private patches: Patch[] = [];
   private listeners: Array<() => void> = [];
   /** The page's `fetch` as it was before we wrapped it; the library sends through this one. */
@@ -143,13 +147,26 @@ export class Capture {
   constructor(opts: CaptureOptions) {
     this.opts = opts;
     this.now = opts.now ?? (() => Date.now());
+    this.logs = new LogBuffer({ now: this.now });
     this.ignoreUrl = opts.ignoreUrl ? networkUrl(opts.ignoreUrl) : undefined;
   }
 
   /** Add a line of your own (also used for errors the library catches). */
-  log(level: LogLevel, msg: string, src = 'console'): void {
+  log(level: LogLevel, msg: string | (() => string), src = 'console'): void {
     if (this.quiet) return;
-    this.logs.push({ t: this.now(), level, msg: cleanMessage(msg), src: src.slice(0, 40) });
+    this.logs.add(level, src, msg, this.now());
+  }
+
+  /**
+   * True while the sheet is open: nothing is recorded, so the sheet's own activity never fills the
+   * buffer (§3.4). Recording resumes when it closes.
+   */
+  get paused(): boolean {
+    return this.pausedFlag;
+  }
+  set paused(v: boolean) {
+    this.pausedFlag = v;
+    this.logs.paused = v;
   }
 
   /** Run `fn` without recording anything it logs or fetches. */
@@ -163,6 +180,7 @@ export class Capture {
   }
 
   install(win: Window & typeof globalThis): void {
+    this.adoptEarly(win);
     if (this.opts.console && win.console) this.installConsole(win.console);
     this.installErrors(win);
     if (this.opts.network) {
@@ -170,6 +188,57 @@ export class Capture {
       this.installXhr(win);
     }
     if (!this.originalFetch && typeof win.fetch === 'function') this.originalFetch = win.fetch;
+  }
+
+  /**
+   * Take over from `@overblast/feedback/early`: stop it, put back the originals it wrapped where its
+   * wrapper is still the installed one (so ours wraps the original, never a wrapper), adopt its
+   * entries with their own timestamps, and remove the buffer from the window.
+   */
+  private adoptEarly(win: Window & typeof globalThis): void {
+    const holder = win as unknown as Record<string, unknown>;
+    let early: EarlyBuffer | undefined;
+    try {
+      early = holder[EARLY_KEY] as EarlyBuffer | undefined;
+    } catch {
+      return;
+    }
+    if (!early || typeof early !== 'object' || early.v !== 1) return;
+    try {
+      early.stop();
+    } catch {
+      /* its wrappers check a flag of their own; a failed stop leaves them recording into a buffer nobody reads */
+    }
+    const targets: Array<[Record<string, unknown> | undefined, string]> = [
+      [win.console as unknown as Record<string, unknown> | undefined, 'warn'],
+      [win.console as unknown as Record<string, unknown> | undefined, 'error'],
+      [holder, 'fetch'],
+    ];
+    for (const [target, name] of targets) {
+      try {
+        const original = early.originals?.[name];
+        const wrapper = early.wrappers?.[name];
+        if (target && original && wrapper && target[name] === wrapper) target[name] = original;
+      } catch {
+        /* a frozen console: its pass-through stays in the chain */
+      }
+    }
+    try {
+      const logs = Array.isArray(early.logs) ? early.logs : [];
+      this.logs.adopt(this.opts.console ? logs : logs.filter((l) => l && l.src !== 'console'), early.dropped || 0);
+      if (this.opts.network && Array.isArray(early.network)) {
+        for (const n of early.network) {
+          if (n && typeof n.url === 'string') this.network.push({ ...n, method: String(n.method || 'GET').toUpperCase().slice(0, 16), url: networkUrl(n.url) });
+        }
+      }
+    } catch {
+      /* what could be read was read */
+    }
+    try {
+      delete holder[EARLY_KEY];
+    } catch {
+      holder[EARLY_KEY] = undefined;
+    }
   }
 
   uninstall(): void {
@@ -185,7 +254,8 @@ export class Capture {
         function (this: unknown, ...args: unknown[]) {
           if (live()) {
             try {
-              capture.log(level, args.map((a) => formatValue(a)).join(' '), 'console');
+              // Formatted only if the line is kept: a storm over the per-second cap costs a count.
+              capture.log(level, () => args.map((a) => formatValue(a)).join(' '), 'console');
             } catch {
               /* recording must never break logging */
             }
@@ -233,10 +303,11 @@ export class Capture {
   }
 
   private record(method: string, url: string, status: number, start: number): void {
-    if (this.quiet) return;
+    if (this.quiet || this.pausedFlag) return;
     try {
       const clean = networkUrl(url);
-      if (this.ignoreUrl && clean === this.ignoreUrl) return;
+      // The door and its device doors (`…/devices`, `…/devices/challenge`) are the library's own.
+      if (this.ignoreUrl && (clean === this.ignoreUrl || clean.startsWith(`${this.ignoreUrl.replace(/\/+$/, '')}/`))) return;
       this.network.push({
         t: start,
         method: (method || 'GET').toUpperCase().slice(0, 16),

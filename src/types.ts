@@ -4,6 +4,9 @@
  * unknown top-level field by name, so nothing here may grow a field the contract does not have.
  */
 
+/** Contract §8.1, as far as a browser can reach: the web is `registered` at best. */
+export type DeviceLevel = 'registered' | 'none';
+
 export type Category = 'bug' | 'idea' | 'question' | 'other';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -24,6 +27,10 @@ export interface LogEntry {
   msg: string;
   /** At most 40 characters: `console`, `onerror`, `unhandledrejection`, or your own. */
   src: string;
+  /** How many times the line occurred in a row, the first included; absent means once (§3.5). */
+  repeat?: number;
+  /** When the last of those repeats came, ms since the epoch. */
+  last?: number;
 }
 
 export interface NetworkEntry {
@@ -69,6 +76,40 @@ export interface FeedbackContext {
   sdk?: { name: string; version: string };
   deviceId?: string;
   extra?: Record<string, string>;
+  /** When the reporter opened the report: the sheet appearing, or `report()` being called (§3.4). */
+  openedAt?: number;
+  /** What opened it. */
+  trigger?: Trigger;
+}
+
+/** Contract §3.1. The web sends `button`, `shortcut`, `shake`, `api`, and `agent` when told to. */
+export type Trigger = 'shake' | 'button' | 'shortcut' | 'agent' | 'api' | 'relaunch';
+
+/** Contract §3.5: the whole buffer, as a gzip NDJSON file. */
+export interface LogFileBody {
+  contentType: 'application/x-ndjson';
+  encoding: 'gzip' | 'identity';
+  base64: string;
+  lines: number;
+  from: number;
+  to: number;
+}
+
+/**
+ * What `@overblast/feedback/early` leaves on `window.__overblastFeedbackEarly` for `init()` to
+ * adopt: the lines and failed requests from before the library loaded, the functions it wrapped
+ * (so `init` can hand the originals back rather than wrap a wrapper), and `stop()`.
+ */
+export interface EarlyBuffer {
+  v: 1;
+  logs: LogEntry[];
+  network: NetworkEntry[];
+  /** Lines over the per-second cap, counted and not kept. */
+  dropped: number;
+  originals: Record<string, (...args: unknown[]) => unknown>;
+  wrappers: Record<string, (...args: unknown[]) => unknown>;
+  /** Silence the recorder: its listeners and wrappers become pass-throughs. Restores nothing. */
+  stop(): void;
 }
 
 export interface ScreenshotBody {
@@ -87,6 +128,7 @@ export interface FeedbackBody {
   element?: DomElement;
   screenshot?: ScreenshotBody;
   logs?: LogEntry[];
+  logFile?: LogFileBody;
   network?: NetworkEntry[];
 }
 
@@ -188,6 +230,12 @@ export interface InitOptions {
   onSent?: (result: ReportResult) => void;
   /** The `fetch` used to send. Default the page's own (unwrapped) `fetch`. */
   fetch?: typeof fetch;
+  /**
+   * Register this browser as a device and sign each report with its key (contract §8), so the door
+   * holds its per-device limits against a real key rather than a value anyone can make up. Default
+   * `true`. Where IndexedDB or WebCrypto is missing, reports go unsigned, as with `false`.
+   */
+  device?: boolean;
 }
 
 export interface ReportInput {
@@ -199,15 +247,20 @@ export interface ReportInput {
   element?: Element | DomElement | null;
   /** `true` captures the viewport now; a Blob is used as given (after blanking). Default none. */
   screenshot?: boolean | Blob | null;
-  /** Default `true`. */
+  /** Default `true`. False leaves out the console lines, the log file and the requests. */
   includeLogs?: boolean;
+  /** @internal What opened the report: Overblast's own chat passes `'agent'`. Default `'api'`. */
+  trigger?: 'api' | 'agent';
   /** Merged over `init`'s `extra`. */
   extra?: Record<string, string | number | boolean>;
 }
 
 export interface FeedbackInstance {
-  /** Open the sheet. */
-  open(): void;
+  /**
+   * Open the sheet. `trigger` is internal: Overblast's own chat passes `'agent'` when it opens the
+   * sheet for the person; everything else is `'api'`.
+   */
+  open(options?: { trigger?: 'api' | 'agent' }): void;
   /** Close the sheet (the draft stays in memory until the page goes). */
   close(): void;
   /** Start the element picker; resolves with the anchor, or `null` when cancelled. */
@@ -217,6 +270,11 @@ export interface FeedbackInstance {
   report(input: ReportInput): Promise<ReportResult>;
   /** Ask for motion permission on iOS. Call it from a tap. Resolves to whether shake is on. */
   enableShake(): Promise<boolean>;
+  /**
+   * `registered` when this browser holds a device the door registered (or one being registered
+   * finishes with one), `none` otherwise. Never starts a registration.
+   */
+  deviceLevel(): Promise<DeviceLevel>;
   /** Remove the button, the listeners and every wrapper this instance installed. */
   destroy(): void;
 }

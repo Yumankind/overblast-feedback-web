@@ -1,8 +1,13 @@
 /**
- * One POST to the door, and its answers read the way contract §3.3 spells them. Never retries:
- * a `429` is handed back with its `retryAfter` and the caller keeps the report (§4).
+ * The POST to the door, and its answers read the way contract §3.3 spells them. A `429` is handed
+ * back with its `retryAfter` and the caller keeps the report (§4); it is never retried here.
+ *
+ * The one resend this file makes is the device's (§8.3): a signature the door does not accept
+ * (`unknown_device`, `device_signature_invalid`) or a key that needs one (`device_required`) gets a
+ * fresh registration and exactly one more try, with the same bytes.
  */
 
+import { RETRY_WAIT_MS, SEND_WAIT_MS, type DeviceClient } from './device.ts';
 import { FeedbackError } from './payload.ts';
 import type { FeedbackBody, ReportResult } from './types.ts';
 
@@ -28,13 +33,66 @@ interface Answer {
   retryAfter?: unknown;
 }
 
-export async function sendReport(fetchImpl: typeof fetch, endpoint: string, key: string, body: FeedbackBody): Promise<ReportResult> {
+/** The body as the bytes that are both signed and sent: encoded once, so the two cannot differ. */
+export function encodeBody(body: FeedbackBody): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(body));
+}
+
+export interface SendOptions {
+  /** The registered device, or null to send unsigned. */
+  device?: DeviceClient | null | undefined;
+  /** How long Send waits for a registration under way. Default 3 s. */
+  waitMs?: number | undefined;
+  /** How long a resend waits for a new registration. Default 30 s. */
+  retryWaitMs?: number | undefined;
+}
+
+export async function sendReport(
+  fetchImpl: typeof fetch,
+  endpoint: string,
+  key: string,
+  body: FeedbackBody,
+  opts: SendOptions = {},
+): Promise<ReportResult> {
+  const bytes = encodeBody(body);
+  const device = opts.device ?? null;
+  if (!device) return post(fetchImpl, endpoint, key, bytes, {});
+
+  const first = await device.ready(opts.waitMs ?? SEND_WAIT_MS);
+  const headers = first.device ? await device.sign(first.device, bytes) : {};
+  try {
+    return await post(fetchImpl, endpoint, key, bytes, headers);
+  } catch (err) {
+    if (!(err instanceof FeedbackError)) throw err;
+    const retryWait = opts.retryWaitMs ?? RETRY_WAIT_MS;
+
+    // The door does not know this device (dropped, or another endpoint's) or will not take its
+    // signature: forget it, register a new one, and send once more, unsigned if that failed.
+    if (err.status === 401 && (err.code === 'unknown_device' || err.code === 'device_signature_invalid')) {
+      await device.drop();
+      const again = await device.ready(retryWait, true);
+      return post(fetchImpl, endpoint, key, bytes, again.device ? await device.sign(again.device, bytes) : {});
+    }
+
+    // The key takes only registered devices. Register, unless this send already tried and failed,
+    // and send once more; without a device, the door's own sentence is what the person sees.
+    if (err.status === 403 && err.code === 'device_required' && !first.device) {
+      if (first.state === 'failed' || first.state === 'unavailable') throw err;
+      const again = await device.ready(retryWait, first.state === 'cooldown');
+      if (!again.device) throw err;
+      return post(fetchImpl, endpoint, key, bytes, await device.sign(again.device, bytes));
+    }
+    throw err;
+  }
+}
+
+async function post(fetchImpl: typeof fetch, endpoint: string, key: string, bytes: Uint8Array, extraHeaders: Record<string, string>): Promise<ReportResult> {
   let response: Response;
   try {
     response = await fetchImpl(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [KEY_HEADER]: key },
-      body: JSON.stringify(body),
+      headers: { 'Content-Type': 'application/json', [KEY_HEADER]: key, ...extraHeaders },
+      body: bytes as BodyInit,
       credentials: 'omit',
       mode: 'cors',
     });

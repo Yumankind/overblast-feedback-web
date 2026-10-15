@@ -38,6 +38,7 @@ if (typeof window !== 'undefined') {
         key,
         ...(d.endpoint ? { endpoint: d.endpoint } : {}),
         ...(d.appVersion ? { appVersion: d.appVersion } : {}),
+        ...(d.device === 'false' ? { device: false } : {}),
         trigger: {
           button: d.button === 'false' ? false : { position: (d.position as 'bottom-right' | undefined) ?? 'bottom-right' },
           ...(d.shortcut ? { shortcut: d.shortcut === 'false' ? false : d.shortcut } : {}),

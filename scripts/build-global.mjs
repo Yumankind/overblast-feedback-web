@@ -28,6 +28,34 @@ await build({
   logLevel: 'warning',
 });
 
+// The early recorder, twice: the script tag's IIFE, and the ESM `@overblast/feedback/early` entry,
+// each bundled with its own copy of the redaction rather than importing it at run time, so loading
+// it in <head> never pulls in the rest of the library. The ESM one replaces what tsc wrote.
+const earlyOut = path.join(root, 'dist', 'overblast-feedback-early.global.js');
+await build({
+  entryPoints: [path.join(root, 'src', 'early-global.ts')],
+  outfile: earlyOut,
+  bundle: true,
+  format: 'iife',
+  platform: 'browser',
+  target: ['es2020'],
+  minify: true,
+  legalComments: 'none',
+  banner: { js: `/*! @overblast/feedback ${pkg.version} */` },
+  logLevel: 'warning',
+});
+await build({
+  entryPoints: [path.join(root, 'src', 'early.ts')],
+  outfile: path.join(root, 'dist', 'early.js'),
+  bundle: true,
+  format: 'esm',
+  platform: 'browser',
+  target: ['es2022'],
+  allowOverwrite: true,
+  legalComments: 'none',
+  logLevel: 'warning',
+});
+
 // The ESM entry as an application's bundler would see it: everything reachable from index.js.
 const esm = await build({
   entryPoints: [path.join(root, 'dist', 'index.js')],
@@ -44,3 +72,13 @@ const size = (label, buf) => {
 };
 size('dist/overblast-feedback.global.js (IIFE)', readFileSync(out));
 size('dist/index.js (ESM, bundled + minified)', Buffer.from(esm.outputFiles[0].contents));
+const early = readFileSync(earlyOut);
+size('dist/overblast-feedback-early.global.js (IIFE)', early);
+console.log(`${''.padEnd(44)} early recorder: ${early.length} bytes, ${gzipSync(early).length} gzipped (budget 1536)`);
+
+// It goes in every page's <head>, before anything else: a budget, held here rather than hoped for.
+const EARLY_BUDGET = 1536;
+if (gzipSync(early).length > EARLY_BUDGET) {
+  console.error(`the early recorder is ${gzipSync(early).length} bytes gzipped, over its ${EARLY_BUDGET}-byte budget`);
+  process.exit(1);
+}

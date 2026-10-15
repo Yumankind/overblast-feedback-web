@@ -5,6 +5,8 @@
  */
 
 export const REDACTED = '[redacted]';
+/** A log line's longest message (contract §3.1). */
+export const MAX_LOG_MSG = 4000;
 
 /** `Bearer abc…`: the scheme word stays, the credential goes. */
 const BEARER = /\b(Bearer)\s+[A-Za-z0-9\-._~+/]{8,}=*/gi;
@@ -155,4 +157,25 @@ export function networkUrl(url: string): string {
   if (!u) return redact(url.split(/[?#]/)[0] ?? '').slice(0, 500);
   if (u.protocol === 'data:' || u.protocol === 'blob:') return `${u.protocol}…`;
   return redact(`${u.origin === 'null' ? `${u.protocol}//` : u.origin}${u.pathname}`).slice(0, 500);
+}
+
+/** Redact first, then cut, so a cut can never leave half a token that no longer matches. */
+export function cleanMessage(text: string): string {
+  const pre = text.length > MAX_LOG_MSG * 4 ? text.slice(0, MAX_LOG_MSG * 4) : text;
+  const out = redact(pre);
+  return out.length > MAX_LOG_MSG ? `${out.slice(0, MAX_LOG_MSG - 1)}…` : out;
+}
+
+export function utf8Length(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) {
+      n += 4;
+      i++;
+    } else n += 3;
+  }
+  return n;
 }
