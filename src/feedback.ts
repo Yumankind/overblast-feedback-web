@@ -260,6 +260,8 @@ export function init(options: InitOptions): FeedbackInstance {
     ui = new FeedbackUi(doc, {
       labels,
       theme: resolveTheme(options.theme, doc),
+      // The tests' fake clock, when they hand one in; the real timers otherwise.
+      clock: (options as { _promptClock?: PromptClock })._promptClock,
       position: buttonShow === false ? null : typeof buttonSetting === 'object' ? (buttonSetting.position ?? 'bottom-right') : 'bottom-right',
       privateSelector,
       needsEmail: () => !reporter()?.email,

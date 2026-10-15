@@ -202,6 +202,8 @@ export interface Labels {
   sent: string;
   /** After sending, when the door says the team already has this issue (§3.3 `known`). */
   sentKnown: string;
+  /** The button under the sent message that closes the sheet. */
+  sentDone: string;
   cancel: string;
   changeElement: string;
   removeElementShort: string;

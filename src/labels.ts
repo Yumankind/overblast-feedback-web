@@ -34,6 +34,7 @@ export const DEFAULT_LABELS: Labels = {
   sending: 'Sending…',
   sent: 'Sent, thank you.',
   sentKnown: "Thanks. We already know about this one and we're on it.",
+  sentDone: 'Done',
   cancel: 'Cancel',
   changeElement: 'Change',
   removeElementShort: 'Remove',

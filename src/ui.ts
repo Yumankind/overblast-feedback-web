@@ -20,8 +20,23 @@ import type { ButtonPosition, Category, DomElement, Labels, ReportResult, Trigge
 
 export const HOST_TAG = 'overblast-feedback';
 export const HOST_ATTR = 'data-overblast-feedback';
-/** How long "Sent, thank you" stays before the sheet closes. */
-export const SENT_HOLD_MS = 1500;
+/** How long "Sent, thank you" stays before the sheet closes by itself: time to read it. */
+export const SENT_HOLD_MS = 2000;
+/** The same for the longer known-issue sentence. */
+export const SENT_KNOWN_HOLD_MS = 4000;
+
+/** The timers the sent state uses; the tests hand in a fake clock. */
+export interface UiClock {
+  now(): number;
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const REAL_CLOCK: UiClock = {
+  now: () => Date.now(),
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+};
 
 export interface SheetValues {
   message: string;
@@ -43,6 +58,7 @@ export interface UiDeps {
   privateSelector: string;
   /** Colours, font, radius and scheme (`init({ theme })` and the page's `--overblast-accent`). */
   theme?: ResolvedTheme | undefined;
+  clock?: UiClock | undefined;
   /** True when the integrator gave no email, so the sheet asks for one. */
   needsEmail(): boolean;
   takeScreenshot(selected: Element | null): Promise<Shot | null>;
@@ -105,7 +121,10 @@ export class FeedbackUi {
   private busy = false;
   private picking: { finish: (el: Element | null) => void } | null = null;
   private destroyed = false;
-  private sentTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The sent state's auto-close: what is left of it, and the timer while it runs (null: paused). */
+  private sent: { remaining: number; startedAt: number; timer: unknown; held: Set<string> } | null = null;
+  /** Set while the library itself moves focus to Done, so that focus does not count as a hold. */
+  private focusingDone = false;
   private viewportOff: (() => void) | null = null;
   private editor: { el: HTMLElement; close: (apply: boolean) => void } | null = null;
   private thumbToken = 0;
@@ -320,9 +339,10 @@ export class FeedbackUi {
             <button type="submit" class="btn primary" data-act="send">${esc(L.send)}</button>
           </div>
         </form>
-        <div class="done" data-part="done" role="status" aria-live="polite" hidden>
+        <div class="done" data-part="done" hidden>
           <span class="tick">${CHECK_ICON}</span>
-          <p data-part="done-text"></p>
+          <p data-part="done-text" role="status" aria-live="polite"></p>
+          <button type="button" class="btn primary" data-act="done-close">${esc(L.sentDone)}</button>
         </div>
       </div>`;
     this.root.appendChild(backdrop);
@@ -337,6 +357,15 @@ export class FeedbackUi {
       if (act) this.act(act);
     });
     backdrop.addEventListener('keydown', (e) => this.onKey(e));
+    // The sent state's clock stops while the person is over the sheet or has moved to Done.
+    const sheetEl = backdrop.querySelector<HTMLElement>('.sheet')!;
+    sheetEl.addEventListener('pointerenter', () => this.holdSent('pointer', true));
+    sheetEl.addEventListener('pointerleave', () => this.holdSent('pointer', false));
+    const doneBtn = backdrop.querySelector<HTMLElement>('[data-act="done-close"]')!;
+    doneBtn.addEventListener('focus', () => {
+      if (!this.focusingDone) this.holdSent('focus', true);
+    });
+    doneBtn.addEventListener('blur', () => this.holdSent('focus', false));
     const form = backdrop.querySelector('form')!;
     form.addEventListener('submit', (e) => {
       e.preventDefault();
@@ -361,7 +390,7 @@ export class FeedbackUi {
   }
 
   private act(act: string): void {
-    if (act === 'close') this.close();
+    if (act === 'close' || act === 'done-close') this.close();
     else if (act === 'pick') void this.pickFromSheet();
     else if (act === 'unselect') {
       this.values.element = null;
@@ -792,7 +821,16 @@ export class FeedbackUi {
     }
   }
 
-  /** "Sent, thank you" over the sheet for a moment, announced politely, then the sheet closes. */
+  private get clock(): UiClock {
+    return this.deps.clock ?? REAL_CLOCK;
+  }
+
+  /**
+   * "Sent, thank you" (or the known-issue sentence) over the form, announced politely; focus moves
+   * to Done. The ✕, Done, Esc and a click outside all close it, and it closes by itself after long
+   * enough to read it, the clock stopping while the pointer is over the sheet or the person has
+   * moved to Done.
+   */
   private showDone(known: boolean): void {
     const done = this.q<HTMLElement>('[data-part="done"]');
     const text = this.q<HTMLElement>('[data-part="done-text"]');
@@ -800,16 +838,64 @@ export class FeedbackUi {
     text.textContent = known ? this.deps.labels.sentKnown : this.deps.labels.sent;
     done.hidden = false;
     this.q<HTMLElement>('form')?.setAttribute('aria-hidden', 'true');
-    if (this.sentTimer) clearTimeout(this.sentTimer);
-    this.sentTimer = setTimeout(() => {
-      this.sentTimer = null;
+    this.stopSent();
+    this.sent = { remaining: known ? SENT_KNOWN_HOLD_MS : SENT_HOLD_MS, startedAt: 0, timer: null, held: new Set() };
+    let hovered = false;
+    try {
+      hovered = !!this.q<HTMLElement>('.sheet')?.matches(':hover');
+    } catch {
+      /* not known */
+    }
+    if (hovered) this.sent.held.add('pointer');
+    this.runSent();
+    this.focusingDone = true;
+    try {
+      this.q<HTMLButtonElement>('[data-act="done-close"]')?.focus();
+    } finally {
+      this.focusingDone = false;
+    }
+  }
+
+  private runSent(): void {
+    const s = this.sent;
+    if (!s || s.timer !== null || s.held.size) return;
+    s.startedAt = this.clock.now();
+    s.timer = this.clock.setTimeout(() => {
+      if (this.sent !== s) return;
+      s.timer = null;
       this.close();
-    }, SENT_HOLD_MS);
+    }, s.remaining);
+  }
+
+  private holdSent(reason: string, on: boolean): void {
+    const s = this.sent;
+    if (!s) return;
+    if (on) {
+      s.held.add(reason);
+      if (s.timer !== null) {
+        this.clock.clearTimeout(s.timer);
+        s.timer = null;
+        // A moment to finish reading when it resumes.
+        s.remaining = Math.max(1000, s.remaining - (this.clock.now() - s.startedAt));
+      }
+    } else {
+      s.held.delete(reason);
+      this.runSent();
+    }
+  }
+
+  private stopSent(): void {
+    if (this.sent?.timer != null) this.clock.clearTimeout(this.sent.timer);
+    this.sent = null;
+  }
+
+  /** Whether the sent state is showing (for the tests and the chat). */
+  get sentShowing(): boolean {
+    return !!this.sent;
   }
 
   private hideDone(): void {
-    if (this.sentTimer) clearTimeout(this.sentTimer);
-    this.sentTimer = null;
+    this.stopSent();
     const done = this.q<HTMLElement>('[data-part="done"]');
     if (done) done.hidden = true;
     this.q<HTMLElement>('form')?.removeAttribute('aria-hidden');

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { $, page, setRect } from './dom.ts';
 import { init } from '../src/index.ts';
 import { DRAFT_KEY } from '../src/draft.ts';
-import { SENT_HOLD_MS } from '../src/ui.ts';
+import { SENT_KNOWN_HOLD_MS } from '../src/ui.ts';
 import { BODY_FIELDS } from '../src/payload.ts';
 import { isApple } from '../src/triggers.ts';
 import type { FeedbackBody, FeedbackInstance } from '../src/types.ts';
@@ -110,16 +110,11 @@ test('the button opens the sheet; Send files the report the contract describes',
   // "Sent, thank you": a check and one line over the sheet, announced politely, then it closes.
   const done = inSheet<HTMLElement>('[data-part="done"]')!;
   assert.equal(done.hidden, false);
-  assert.equal(done.getAttribute('aria-live'), 'polite');
+  assert.equal(inSheet<HTMLElement>('[data-part="done-text"]')!.getAttribute('aria-live'), 'polite');
   assert.equal(inSheet<HTMLElement>('[data-part="done-text"]')!.textContent, 'Sent, thank you.');
   assert.deepEqual(sent, { id: 'fbr_1', taskId: 'todo_1', conversationId: null });
   assert.equal(inSheet<HTMLTextAreaElement>('textarea')!.value, '', 'the form is cleared');
-  assert.ok(isOpen(), 'still open for the moment');
-  await new Promise((r) => setTimeout(r, SENT_HOLD_MS - 300));
-  assert.ok(isOpen());
-  await new Promise((r) => setTimeout(r, 400));
-  assert.equal(isOpen(), false, 'closed after about a second and a half');
-  assert.equal(done.hidden, true);
+  assert.ok(isOpen(), 'still open for the moment (the timings are in sent.test.ts)');
 });
 
 test('known: "we already know about this one"; an error keeps the sheet open with its sentence', async () => {
@@ -139,8 +134,9 @@ test('known: "we already know about this one"; an error keeps the sheet open wit
   type(inSheet<HTMLTextAreaElement>('textarea')!, 'x');
   inSheet<HTMLButtonElement>('[data-act="send"]')!.click();
   await settle();
-  await new Promise((r) => setTimeout(r, SENT_HOLD_MS + 100));
+  await new Promise((r) => setTimeout(r, 300));
   assert.ok(isOpen(), 'an error never closes the sheet');
+  assert.ok(SENT_KNOWN_HOLD_MS > 0);
   assert.equal(inSheet<HTMLElement>('[data-part="done"]')!.hidden, true);
   assert.match(status(), /The page address is not valid/);
 });

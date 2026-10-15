@@ -141,7 +141,11 @@ button, input, textarea { font: inherit; color: inherit; }
   border-radius: var(--ob-radius, 14px);
   box-shadow: var(--ob-shadow);
 }
-.head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 14px 6px 18px; }
+.head {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 14px 6px 18px;
+  /* Above the sent state, so its ✕ stays in reach. */
+  position: relative; z-index: 3; background: var(--ob-bg);
+}
 .head h2 { margin: 0; font-size: 17px; font-weight: 650; }
 form { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; margin: 0; }
 .body {
@@ -228,8 +232,9 @@ textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
 /* Sent: a check and one line over the sheet, then it closes. */
 .done {
   position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center;
-  gap: 12px; padding: 24px; text-align: center; background: var(--ob-bg); font-size: 16px; font-weight: 600;
+  gap: 12px; padding: 64px 24px 24px; text-align: center; background: var(--ob-bg); font-size: 16px; font-weight: 600;
 }
+.done .btn.primary { margin-top: 6px; min-width: 120px; }
 .done p {
   /* Two even lines rather than a long one and a lone word: balance where the browser has it, and a
      measure near 30 characters where it does not, so the break falls near the middle anyway. */
