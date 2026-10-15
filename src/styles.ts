@@ -104,6 +104,7 @@ button, input, textarea { font: inherit; color: inherit; }
   transform: none;
   transition: opacity 200ms ease, transform 200ms ease;
 }
+.pill > span { text-wrap: balance; }
 .pill.left { right: auto; left: 16px; }
 .pill.above { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
 .pill.entering { opacity: 0; transform: translateY(8px); }
@@ -217,8 +218,9 @@ textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
 .shot-preview { padding: 0; border: 1px solid var(--ob-line); border-radius: var(--ob-radius-sm, 10px); overflow: hidden; background: var(--ob-soft); cursor: zoom-in; max-width: 100%; }
 .shot-preview img { display: block; max-width: 100%; max-height: 140px; }
 .icon.on-image { position: absolute; top: 4px; left: 4px; background: var(--ob-bg); width: 28px; height: 28px; border: 1px solid var(--ob-line); font-size: 16px; }
-.preview { font-size: 12px; color: var(--ob-muted); }
-.status { font-size: 13px; min-height: 1em; }
+.preview { font-size: 12px; color: var(--ob-muted); text-wrap: pretty; }
+.status { font-size: 13px; min-height: 1em; text-wrap: pretty; }
+.hint, .err, .offer > span { text-wrap: pretty; }
 .status.error { color: var(--ob-danger); }
 .status.ok { color: var(--ob-ok); }
 .offer { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--ob-muted); padding: 8px 10px; border-radius: var(--ob-radius-sm, 10px); background: var(--ob-soft); }
@@ -227,6 +229,11 @@ textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
 .done {
   position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 12px; padding: 24px; text-align: center; background: var(--ob-bg); font-size: 16px; font-weight: 600;
+}
+.done p {
+  /* Two even lines rather than a long one and a lone word: balance where the browser has it, and a
+     measure near 30 characters where it does not, so the break falls near the middle anyway. */
+  max-width: 30ch; text-wrap: balance;
 }
 .done .tick { width: 52px; height: 52px; border-radius: 50%; background: var(--ob-accent); color: var(--ob-accent-fg); display: flex; align-items: center; justify-content: center; animation: ob-pop 260ms ease-out; }
 .done .tick svg { width: 28px; height: 28px; }
@@ -267,7 +274,7 @@ textarea { min-height: 150px; resize: vertical; line-height: 1.45; }
   padding: 6px 6px 6px 14px; border-radius: 999px; background: var(--ob-bg); color: var(--ob-fg); box-shadow: var(--ob-shadow);
   font-size: 13px; font-weight: 600;
 }
-.pick-hint { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pick-hint { min-width: 0; max-width: 34ch; text-wrap: balance; }
 .pick-bar.bottom { top: auto; bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
 
 @media (prefers-reduced-motion: reduce) {

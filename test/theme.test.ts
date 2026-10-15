@@ -100,6 +100,14 @@ test('layout: never taller than the viewport, the body scrolls, the bar with Sen
   assert.match(CSS, /@media \(max-height: 600px\) \{ textarea \{ min-height: 96px; \} \}/);
 });
 
+test('short centred messages break into even lines: balance, and a ~30ch measure where it is missing', () => {
+  assert.equal(ruleValue('.done p', 'text-wrap'), 'balance');
+  assert.equal(ruleValue('.done p', 'max-width'), '30ch');
+  assert.match(CSS, /\.pill > span \{ text-wrap: balance; \}/);
+  assert.match(CSS, /\.pick-hint \{[^}]*text-wrap: balance;/);
+  assert.match(CSS, /\.status \{[^}]*text-wrap: pretty;/, 'longer text: pretty, not balanced');
+});
+
 test('the sheet\'s order: categories on top, the message, and Cancel and Send in the bar', () => {
   page('<main></main>');
   fb = init({ key: 'obfk_t', fetch: noFetch });
