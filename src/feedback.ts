@@ -8,7 +8,8 @@
  */
 
 import { Capture, sameOrigin } from './capture.ts';
-import { ConfigClient, DEFAULT_CONFIG, type KeyConfig } from './config.ts';
+import { ConfigClient, DEFAULT_CONFIG, categoryRefusal, type KeyConfig } from './config.ts';
+import { CHAT_READY_EVENT, chatApi, chatPresent, embedHeaders, type FeedbackCapabilities, type FeedbackOpenOptions, type FeedbackOpenResult } from './chat.ts';
 import { ErrorPrompt, TypingTracker, type PromptClock } from './prompt.ts';
 import { collectContext, safeStorage } from './context.ts';
 import { DeviceClient } from './device.ts';
@@ -28,7 +29,7 @@ import {
   parseShortcut,
   requestMotion,
 } from './triggers.ts';
-import type { DomElement, FeedbackInstance, InitOptions, ReportInput, ReportResult, Reporter, Trigger } from './types.ts';
+import type { Category, DomElement, FeedbackInstance, InitOptions, ReportInput, ReportResult, Reporter, Trigger } from './types.ts';
 import { FeedbackUi, type SheetValues } from './ui.ts';
 
 /** `granted` | `denied` | `dismissed`: what became of the one-time shake offer on iOS. */
@@ -156,6 +157,14 @@ export function init(options: InitOptions): FeedbackInstance {
 
   async function send(input: ReportInput, element: DomElement | undefined, shot: Shot | null, opened: { at: number; trigger: Trigger }): Promise<ReportResult> {
     if (destroyed) throw new FeedbackError(-1, 'destroyed', 'This feedback instance was destroyed.');
+    // The key's kinds of report (§2): none is sent that the door would refuse, and the refusal is
+    // the door's own, so code handling it is the same whether this side or the worker said no.
+    const allowed = keyConfig().categories;
+    const category: Category = input.category ?? allowed[0] ?? 'bug';
+    if (!allowed.includes(category)) {
+      throw new FeedbackError(403, 'category_not_accepted', categoryRefusal(allowed));
+    }
+    input = { ...input, category };
     const extra = cleanExtra({ ...(options.extra ?? {}), ...(input.extra ?? {}) });
     const withLogs = input.includeLogs !== false;
     const context = collectContext({ appVersion: options.appVersion, build: options.build, locale: options.locale, extra });
@@ -175,15 +184,18 @@ export function init(options: InitOptions): FeedbackInstance {
     // The whole buffer as a file (§3.5), in the room the rest of the body leaves.
     await attachLogFile(body, lines);
     const dev = getDevice();
+    // The chat's device first (feedback-chat-integration §2.1), so the task lands in the visitor's
+    // conversation; the library's own when the chat has none to lend.
+    const embed = (bytes: Uint8Array) => embedHeaders(chatApi(win), bytes);
     try {
-      return await sendReport(sendFetch(), endpoint, key, body, { device: dev });
+      return await sendReport(sendFetch(), endpoint, key, body, { device: dev, embed });
     } catch (err) {
       // The kept answer was stale: the key requires a device now. Register and send once more.
       if (!dev && err instanceof FeedbackError && err.code === 'device_required' && options.device !== false && hasDom) {
         deviceDemanded = true;
         void config?.refresh();
         const now = getDevice();
-        if (now) return sendReport(sendFetch(), endpoint, key, body, { device: now });
+        if (now) return sendReport(sendFetch(), endpoint, key, body, { device: now, embed });
       }
       throw err;
     }
@@ -234,6 +246,7 @@ export function init(options: InitOptions): FeedbackInstance {
     const ok = await requestMotion();
     writeShakeState(ok ? 'granted' : 'denied');
     if (ok) startMotion();
+    announce(true);
     return ok;
   }
 
@@ -243,15 +256,15 @@ export function init(options: InitOptions): FeedbackInstance {
 
   const mountUi = () => {
     if (destroyed || !doc || ui) return;
-    const button = trigger.button ?? true;
     ui = new FeedbackUi(doc, {
       labels,
-      position: button === false ? null : button === true ? 'bottom-right' : (button.position ?? 'bottom-right'),
+      position: buttonShow === false ? null : typeof buttonSetting === 'object' ? (buttonSetting.position ?? 'bottom-right') : 'bottom-right',
       privateSelector,
       needsEmail: () => !reporter()?.email,
       takeScreenshot: screenshotFor,
       submit: reportFromSheet,
       screenshotsAllowed: () => keyConfig().screenshots,
+      categories: () => keyConfig().categories,
       onOpen: () => {
         capture.paused = true;
         prompt?.sheetOpened();
@@ -260,6 +273,7 @@ export function init(options: InitOptions): FeedbackInstance {
       },
       onClose: () => {
         capture.paused = false;
+        settleOpen({ filed: false, reason: 'cancelled' });
       },
       onButtonGesture: () => {
         // iOS forgets the motion grant between page loads but answers a repeat request silently,
@@ -273,13 +287,91 @@ export function init(options: InitOptions): FeedbackInstance {
       },
       onSent: options.onSent,
     });
+    placeButton();
+  };
+
+  // ── The site's chat (feedback-chat-integration §2.1, §5a) ──────────────────────────────────
+  // `'auto'`: the floating button only when the chat is not on the page. The chat may load after
+  // this library, so it is looked for at init, in idle time, and on its `infinite:ready`.
+  const buttonSetting = trigger.button ?? 'auto';
+  const buttonShow = typeof buttonSetting === 'object' ? (buttonSetting.show ?? 'auto') : buttonSetting;
+  const placeButton = () => {
+    if (!ui) return;
+    if (buttonShow === true) ui.setButtonVisible(true);
+    else if (buttonShow === 'auto') ui.setButtonVisible(!chatPresent(win));
+  };
+
+  /** The open the chat asked for, settled when the visitor sends or closes the sheet. */
+  let pendingOpen: ((r: FeedbackOpenResult) => void) | null = null;
+  const settleOpen = (r: FeedbackOpenResult) => {
+    const done = pendingOpen;
+    pendingOpen = null;
+    done?.(r);
+  };
+
+  const capabilities = (): FeedbackCapabilities => {
+    let coarse = false;
+    try {
+      coarse = !!win?.matchMedia?.('(pointer: coarse)').matches;
+    } catch {
+      /* fine */
+    }
+    return {
+      available: !destroyed && !!ui,
+      source: 'library',
+      picker: !!ui,
+      screenshot: !!doc && keyConfig().screenshots,
+      shake: listening,
+      pointer: coarse ? 'coarse' : 'fine',
+      categories: [...keyConfig().categories],
+    };
+  };
+
+  /** The chat's agent, or its "Report a problem" entry, opens the sheet with the visitor's words. */
+  const opener = (o: FeedbackOpenOptions = {}): Promise<FeedbackOpenResult> => {
+    if (destroyed || !ui) return Promise.resolve({ filed: false, reason: 'unavailable' });
+    const sheet = ui;
+    const trig: Trigger = o.trigger === 'agent' ? 'agent' : o.trigger === 'error_prompt' ? 'error_prompt' : 'api';
+    const allowed = keyConfig().categories;
+    const wanted = o.category ?? (trig === 'error_prompt' ? 'bug' : undefined);
+    const category = wanted && allowed.includes(wanted) ? wanted : allowed[0];
+    settleOpen({ filed: false, reason: 'superseded' });
+    return new Promise<FeedbackOpenResult>((resolve) => {
+      pendingOpen = resolve;
+      // Logged before the sheet opens: collection pauses while it is open.
+      if (trig === 'error_prompt') prompt?.reportedFromChat();
+      sheet.open(trig, { ...(category ? { category } : {}), ...(typeof o.message === 'string' ? { message: o.message } : {}) });
+      if (o.pick) void sheet.startPick();
+    });
+  };
+
+  let announcedTo: unknown = null;
+  /** Tell the chat what this page can do, and hand it the opener (again whenever that changes). */
+  const announce = (force = false) => {
+    const api = chatApi(win);
+    if (!api || typeof api.announce !== 'function') return;
+    if (!force && announcedTo === api && !destroyed) return;
+    announcedTo = api;
+    try {
+      if (destroyed) api.announce({ ...capabilities(), available: false });
+      else api.announce(capabilities(), opener);
+    } catch {
+      /* an older chat: it simply does not know about us */
+    }
+  };
+
+  const meetChat = () => {
+    placeButton();
+    announce();
   };
 
   /** The sheet's anchor was taken when the person pointed, and its screenshot is already finished. */
-  function reportFromSheet(v: SheetValues): Promise<ReportResult> {
+  async function reportFromSheet(v: SheetValues): Promise<ReportResult> {
     const input: ReportInput = { message: v.message, category: v.category };
     if (v.email) input.reporter = { email: v.email };
-    return send(input, v.anchor ?? undefined, v.shot, { at: v.openedAt ?? Date.now(), trigger: v.trigger });
+    const result = await send(input, v.anchor ?? undefined, v.shot, { at: v.openedAt ?? Date.now(), trigger: v.trigger });
+    settleOpen({ filed: true, reportId: result.id, ...(result.reference ? { reference: result.reference } : {}) });
+    return result;
   }
 
   if (doc) {
@@ -338,6 +430,20 @@ export function init(options: InitOptions): FeedbackInstance {
           openSheet: () => ui?.open('error_prompt', { category: 'bug' }),
           log: (msg) => capture.log('info', msg, 'overblast'),
           storage: safeStorage,
+          // With the chat on the page, its launcher shows the prompt, or nothing does (§5a).
+          nudge: (kind) => {
+            if (!chatPresent(win)) return null;
+            const api = chatApi(win);
+            if (!api || typeof api.nudge !== 'function') return Promise.resolve(false);
+            try {
+              return Promise.resolve(api.nudge({ text: labels.promptText, reason: kind })).then(
+                (r) => !!(r && (r as { shown?: unknown }).shown === true),
+                () => false,
+              );
+            } catch {
+              return Promise.resolve(false);
+            }
+          },
         })
       : null;
   if (prompt) {
@@ -353,7 +459,9 @@ export function init(options: InitOptions): FeedbackInstance {
     config = new ConfigClient({ endpoint, key, fetch: sendFetch });
     const cfg = config;
     const ask = () => {
-      if (!destroyed) void cfg.refresh();
+      if (destroyed) return;
+      void cfg.refresh();
+      meetChat();
     };
     const w = win as (Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }) | undefined;
     if (w && typeof w.requestIdleCallback === 'function') {
@@ -368,12 +476,23 @@ export function init(options: InitOptions): FeedbackInstance {
     };
     doc.addEventListener('visibilitychange', onVisible);
     cleanups.push(() => doc.removeEventListener('visibilitychange', onVisible));
-    // A key switched to `flag` or `require` while the sheet is open: register now.
+    // A key switched to `flag` or `require` while the sheet is open: register now. And the chat
+    // hears of new categories or screenshots.
     cleanups.push(
       cfg.onChange(() => {
         if (ui?.isOpen) registerWhenIdle();
+        announce(true);
       }),
     );
+  }
+
+  if (win) {
+    const onChat = () => {
+      if (!destroyed) meetChat();
+    };
+    win.addEventListener(CHAT_READY_EVENT, onChat);
+    cleanups.push(() => win.removeEventListener(CHAT_READY_EVENT, onChat));
+    meetChat();
   }
 
   const instance: FeedbackInstance = {
@@ -396,6 +515,8 @@ export function init(options: InitOptions): FeedbackInstance {
     destroy() {
       if (destroyed) return;
       destroyed = true;
+      settleOpen({ filed: false, reason: 'unavailable' });
+      announce(true); // `available: false`: the chat stops offering the library's sheet
       for (const off of cleanups.splice(0)) off();
       capture.uninstall();
       ui?.destroy();

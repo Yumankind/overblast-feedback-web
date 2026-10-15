@@ -56,6 +56,12 @@ export interface PromptDeps extends PromptClock {
   /** A line in the report's log, `src: overblast`. */
   log(msg: string): void;
   storage(): Storage | null;
+  /**
+   * With the site's chat on the page (feedback-chat-integration §5a): ask it to show the prompt from
+   * its own launcher, resolving with whether it did. Null when there is no chat, and the library draws
+   * its own pill. With a chat that offers no nudge, a promise of false: then nothing is shown at all.
+   */
+  nudge?: ((kind: ErrorKind) => Promise<boolean> | null) | undefined;
 }
 
 interface Memory {
@@ -71,6 +77,7 @@ export class ErrorPrompt {
   private pending = false;
   private destroyed = false;
   private lastSignalAt = -Infinity;
+  private kind: ErrorKind = 'exception';
   private waitStart: number | null = null;
   private timer: unknown = null;
   private expireTimer: unknown = null;
@@ -95,8 +102,15 @@ export class ErrorPrompt {
     this.lastSignalAt = now;
     if (merged) return;
     this.pending = true;
+    this.kind = kind;
     this.waitStart = null;
     this.schedule(Math.max(0, this.d.startedAt + PROMPT_MIN_AGE_MS - now));
+  }
+
+  /** The chat's nudge was tapped (it opened the sheet with `trigger: error_prompt`). */
+  reportedFromChat(): void {
+    this.remember({ ...this.memory(), dismissals: 0 });
+    this.d.log('error prompt: reporting');
   }
 
   /** The sheet opened some other way: the pill, if up, goes without counting as a dismissal. */
@@ -153,6 +167,22 @@ export class ErrorPrompt {
       if (this.waitStart === null) this.waitStart = now;
       if (now - this.waitStart >= PROMPT_WAIT_MS) return this.giveUp();
       this.schedule(PROMPT_POLL_MS);
+      return;
+    }
+    const viaChat = this.d.nudge?.(this.kind) ?? null;
+    if (viaChat) {
+      // The chat shows it, or declines (busy, or it offers no nudges): no pill either way. Still
+      // pending meanwhile, so errors while it answers are the same prompt.
+      void viaChat.then(
+        (shown) => {
+          this.giveUp();
+          if (!shown || this.destroyed || this.shown) return;
+          this.shown = true;
+          this.remember({ ...this.memory(), lastShown: this.d.now() });
+          this.d.log('error prompt shown');
+        },
+        () => this.giveUp(),
+      );
       return;
     }
     this.pending = false;

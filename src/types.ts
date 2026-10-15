@@ -142,13 +142,20 @@ export interface ReportResult {
    * the screenshot and the attached report file.
    */
   storageFull?: boolean;
+  /** A short reference the team uses for the report (`R-1042`), when the door gives one. */
+  reference?: string;
 }
 
 export type ButtonPosition = 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
 
 export interface TriggerOptions {
-  /** The floating button. Default `true`. */
-  button?: boolean | { position?: ButtonPosition };
+  /**
+   * The floating button. Default `'auto'`: shown, except when the site's chat (`window.InfiniteAgent`)
+   * is on the page, which is then the one way in (it may load later; the button goes when it does).
+   * `true` and `false` force it; `{ position, show }` places it, `show` being any of the three
+   * (default `'auto'`).
+   */
+  button?: boolean | 'auto' | { position?: ButtonPosition; show?: boolean | 'auto' };
   /** A keyboard shortcut such as `'mod+shift+f'` (`mod` is ⌘ on Apple, Ctrl elsewhere), or `false`. */
   shortcut?: string | false;
   /** Shake to report, on touch devices with a motion sensor. Default `true`. */
@@ -158,6 +165,8 @@ export interface TriggerOptions {
 export interface Labels {
   button: string;
   title: string;
+  /** The sheet's title when the key takes one kind of report only (§2). */
+  titleSingle: string;
   close: string;
   categoryLegend: string;
   categoryBug: string;

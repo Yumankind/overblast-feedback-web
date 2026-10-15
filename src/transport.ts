@@ -31,6 +31,7 @@ interface Answer {
   error?: unknown;
   field?: unknown;
   retryAfter?: unknown;
+  reference?: unknown;
 }
 
 /** The body as the bytes that are both signed and sent: encoded once, so the two cannot differ. */
@@ -45,6 +46,11 @@ export interface SendOptions {
   waitMs?: number | undefined;
   /** How long a resend waits for a new registration. Default 30 s. */
   retryWaitMs?: number | undefined;
+  /**
+   * The site chat's device (feedback-chat-integration §2.1): headers over the body, or null when
+   * the chat has none to lend. Used before the library's own device; a refusal of it falls back.
+   */
+  embed?: ((body: Uint8Array) => Promise<Record<string, string> | null>) | null | undefined;
 }
 
 export async function sendReport(
@@ -55,6 +61,24 @@ export async function sendReport(
   opts: SendOptions = {},
 ): Promise<ReportResult> {
   const bytes = encodeBody(body);
+  if (opts.embed) {
+    let borrowed: Record<string, string> | null = null;
+    try {
+      borrowed = await opts.embed(bytes);
+    } catch {
+      borrowed = null;
+    }
+    if (borrowed) {
+      try {
+        return await post(fetchImpl, endpoint, key, bytes, borrowed);
+      } catch (err) {
+        // The door does not take the chat's device (unknown, forgotten, or a door that predates
+        // embed devices): the library's own path below, as if the chat had none.
+        const refused = err instanceof FeedbackError && err.status === 401 && (err.code === 'unknown_device' || err.code === 'device_signature_invalid');
+        if (!refused) throw err;
+      }
+    }
+  }
   const device = opts.device ?? null;
   if (!device) return post(fetchImpl, endpoint, key, bytes, {});
 
@@ -113,6 +137,7 @@ async function post(fetchImpl: typeof fetch, endpoint: string, key: string, byte
       id: answer.id as string,
       taskId: answer.taskId as string,
       conversationId: typeof answer.conversationId === 'string' ? answer.conversationId : null,
+      ...(typeof answer.reference === 'string' && answer.reference ? { reference: answer.reference } : {}),
     };
   }
   // 507: the workspace is out of storage. The task is still filed, without the files (§3.3, §5.3).

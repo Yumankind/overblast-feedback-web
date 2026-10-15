@@ -43,12 +43,15 @@ test('parse: defensive, defaults for anything missing; the url', () => {
     verification: 'off',
     errorPrompt: { enabled: false, on: ['exception'], minHoursBetween: 24 },
     screenshots: true,
+    categories: ['bug', 'idea', 'question', 'other'],
   });
-  assert.deepEqual(parseConfig({ verification: 'require', errorPrompt: { enabled: true, on: ['network'], minHoursBetween: 2 }, screenshots: false }), {
+  assert.deepEqual(parseConfig({ verification: 'require', errorPrompt: { enabled: true, on: ['network'], minHoursBetween: 2 }, screenshots: false, categories: ['question', 'bug', 'question', 'nope'] }), {
     verification: 'require',
     errorPrompt: { enabled: true, on: ['network'], minHoursBetween: 2 },
     screenshots: false,
+    categories: ['question', 'bug'],
   });
+  assert.deepEqual(parseConfig({ categories: [] }).categories, ['bug', 'idea', 'question', 'other'], 'never empty');
   assert.equal(configUrl(ENDPOINT), `${ENDPOINT}/config`);
   assert.equal(configUrl(`${ENDPOINT}/`), `${ENDPOINT}/config`);
 });

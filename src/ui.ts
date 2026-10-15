@@ -43,6 +43,8 @@ export interface UiDeps {
   onClose?: (() => void) | undefined;
   /** False when the key has screenshots off (§2.1): the sheet does not offer one. */
   screenshotsAllowed?: (() => boolean) | undefined;
+  /** The kinds of report the key takes (§2); one means no choice, and the "Report a problem" title. */
+  categories?: (() => Category[]) | undefined;
   /** Called inside the button's click handler, which is a user gesture (iOS motion permission). */
   onButtonGesture(): void;
   shake: {
@@ -130,7 +132,26 @@ export class FeedbackUi {
 
   // ── The sheet ───────────────────────────────────────────────────────────────────────────────
 
-  open(trigger: Trigger = 'api', preset: { category?: Category } = {}): void {
+  /** Show or hide the floating button (hidden while the site's chat is the one in the corner). */
+  setButtonVisible(visible: boolean): void {
+    if (this.fab) this.fab.hidden = !visible;
+  }
+
+  get buttonVisible(): boolean {
+    return !!this.fab && !this.fab.hidden;
+  }
+
+  /** Start pointing at an element from the open sheet, as its "Point at it" button does. */
+  startPick(): Promise<void> {
+    return this.pickFromSheet();
+  }
+
+  private allowedCategories(): Category[] {
+    const c = this.deps.categories?.();
+    return c && c.length ? c : CATEGORY_ORDER;
+  }
+
+  open(trigger: Trigger = 'api', preset: { category?: Category; message?: string } = {}): void {
     if (this.destroyed || this.picking) return;
     if (!this.backdrop) this.buildSheet();
     const backdrop = this.backdrop!;
@@ -151,6 +172,9 @@ export class FeedbackUi {
         this.setStatus(this.deps.labels.draftRestored, 'info');
       }
     }
+    // A fresh sheet starts on the key's first kind (§2); a restored draft keeps its own.
+    if (!this.values.message) this.values.category = this.allowedCategories()[0]!;
+    if (preset.message && !this.values.message) this.values.message = preset.message.slice(0, 4000);
     if (preset.category) this.values.category = preset.category;
     this.render();
     backdrop.hidden = false;
@@ -341,7 +365,18 @@ export class FeedbackUi {
     const v = this.values;
     const ta = this.q<HTMLTextAreaElement>('textarea');
     if (ta && ta.value !== v.message) ta.value = v.message;
-    for (const r of Array.from(this.backdrop.querySelectorAll<HTMLInputElement>('input[name="ob-category"]'))) r.checked = r.value === v.category;
+    const allowed = this.allowedCategories();
+    if (!allowed.includes(v.category)) v.category = allowed[0]!;
+    for (const r of Array.from(this.backdrop.querySelectorAll<HTMLInputElement>('input[name="ob-category"]'))) {
+      r.checked = r.value === v.category;
+      const chip = r.closest('label');
+      if (chip) (chip as HTMLElement).hidden = !allowed.includes(r.value as Category);
+    }
+    // One kind only: no choice to make, and the sheet says what it is for.
+    const fieldset = this.q<HTMLElement>('fieldset');
+    if (fieldset) fieldset.hidden = allowed.length < 2;
+    const title = this.q<HTMLElement>('#ob-title');
+    if (title) title.textContent = allowed.length < 2 ? this.deps.labels.titleSingle : this.deps.labels.title;
     const emailPart = this.q<HTMLElement>('[data-part="email"]');
     if (emailPart) emailPart.hidden = !this.deps.needsEmail();
     const email = this.q<HTMLInputElement>('input[type="email"]');
@@ -507,7 +542,7 @@ export class FeedbackUi {
     this.setShot(null);
     // Still the same opening of the sheet: `openedAt` and `trigger` stay.
     const { openedAt, trigger } = this.values;
-    this.values = { message: '', category: 'bug', email: this.values.email, element: null, anchor: null, shot: null, openedAt, trigger };
+    this.values = { message: '', category: this.allowedCategories()[0]!, email: this.values.email, element: null, anchor: null, shot: null, openedAt, trigger };
     this.render();
   }
 

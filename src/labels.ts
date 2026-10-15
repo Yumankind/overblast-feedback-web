@@ -4,6 +4,7 @@ import type { Labels } from './types.ts';
 export const DEFAULT_LABELS: Labels = {
   button: 'Feedback',
   title: 'Send feedback',
+  titleSingle: 'Report a problem',
   close: 'Close',
   categoryLegend: 'Kind of feedback',
   categoryBug: 'Bug',

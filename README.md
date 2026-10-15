@@ -10,7 +10,7 @@ when they chose to attach one.
 npm i @overblast/feedback@^0.2.0
 ```
 
-Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 31 KB
+Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 33 KB
 gzipped, and an optional 1.5 KB recorder for `<head>` ([below](#catch-errors-from-the-first-line)).
 
 ---
@@ -46,7 +46,7 @@ opens the sheet, and shaking a phone does too.
 ```
 
 With `data-key` the script starts itself. It also reads `data-endpoint`, `data-app-version`,
-`data-position` (`bottom-right`, `bottom-left`, `top-right`, `top-left`), `data-button="false"`,
+`data-position` (`bottom-right`, `bottom-left`, `top-right`, `top-left`), `data-button` (`"false"` never, `"true"` always, otherwise hidden while the site's chat is on the page),
 `data-shortcut` (`"false"` turns it off), `data-shake="false"` and `data-device="false"`. The started instance is
 `window.OverblastFeedback.instance`.
 
@@ -69,7 +69,7 @@ init({
   endpoint: 'https://brain.deployd.network/v1/feedback',
   reporter: { email, name, accountRef },            // or () => ({ … }), read at send time
   trigger: {
-    button: true,                                   // or false, or { position: 'bottom-left' }
+    button: 'auto',                                 // hidden while the site's chat is on the page; true/false force; or { position, show }
     shortcut: 'mod+shift+f',                        // or false; `mod` is ⌘ on Apple, Ctrl elsewhere
     shake: true,                                    // touch devices with a motion sensor
   },
@@ -93,7 +93,7 @@ init({
 |---|---|
 | `key` | The workspace's public feedback key. It is not a secret: it only files reports into that workspace, and it can be revoked. |
 | `reporter` | Who is reporting. `accountRef` is **your** id for this person (a customer id, a user id), so the team can find them in your own system. When you give an `email`, the sheet does not ask for one. A function is called each time a report is sent. |
-| `trigger.button` | The floating button. It lives in a shadow root, so your CSS cannot break it and its CSS cannot leak onto your page. |
+| `trigger.button` | The floating button. It lives in a shadow root, so your CSS cannot break it and its CSS cannot leak onto your page. By default (`'auto'`) it steps aside when the site's chat is on the page (see [With the site's chat](#with-the-sites-chat)); `true` and `false` force it. |
 | `trigger.shortcut` | `mod+shift+f` by default. Combinations use `mod`, `ctrl`, `meta`, `alt`, `shift` and a key (`f`, `period`, `slash`). If your page already handles the same keys and calls `preventDefault()`, the shortcut stands aside. |
 | `trigger.shake` | Shake to report on phones and tablets. See [Shake on iOS](#shake-on-ios). |
 | `captureScreenshot` | Your own screenshot of the viewport, for when the built-in one is not good enough on your page. Return a `Blob` (PNG, JPEG or WebP) or `null`. Private elements are still blanked on it. |
@@ -107,9 +107,12 @@ init({
 
 ### Settings that live on the key
 
-Three things are switched on the key in the Overblast console rather than in code, so they can be
-changed without a release: device verification, the error prompt, and whether screenshots are
-offered. The library reads them in idle time after `init` (`GET …/v1/feedback/config`), keeps the
+Four things are switched on the key in the Overblast console rather than in code, so they can be
+changed without a release: device verification, the error prompt, whether screenshots are offered,
+and the kinds of report the key takes. With one kind (bugs only, say) the sheet has no category
+choice and is titled "Report a problem" (`labels.titleSingle`); with several, only those are shown,
+the first chosen. `report()` with a kind the key does not take is refused on this side with the
+door's own `403 category_not_accepted`, and nothing is sent. The library reads them in idle time after `init` (`GET …/v1/feedback/config`), keeps the
 answer in `localStorage` with its ETag, asks again at most every five minutes on a long-lived page,
 and uses the kept answer when offline. Until it has ever had an answer it behaves as the defaults:
 no device registration, no error prompt, screenshots offered. Your own options can only turn these
@@ -264,6 +267,26 @@ a close button, in the page's light or dark scheme. It is not a dialog, and it k
   the log (`error prompt shown`, `error prompt dismissed`, `error prompt went by itself`, `error prompt: reporting`), so a report says whether the person was prompted.
 
 Labels: `promptText`, `promptReport`, `promptClose`.
+
+## With the site's chat
+
+When the page also runs Overblast's site chat (`window.InfiniteAgent`), the chat is the one button in
+the corner: the library hides its own, including when the chat loads later (it listens for the chat's
+`infinite:ready` event). Everything else keeps running: recording, the shortcut, shake and
+`report()`. And:
+
+- **Reports land in the visitor's conversation.** The library signs with the chat's device instead of
+  its own, so the task points at the conversation and the conversation shows the task. When the chat
+  has no device to lend (not registered yet, or "forget me"), or the door refuses it, the library's
+  own device is used and the report is filed as before.
+- **The chat can open the sheet.** The library tells the chat what this page can do (pointing at an
+  element, a screenshot, shake, and the key's categories) and hands it the sheet: the chat's agent, or
+  its "Report a problem" entry, opens it with the visitor's words. Nothing is sent until the visitor
+  presses Send.
+- **The error prompt comes from the chat's launcher**, after the same rules as above. If the chat is
+  busy or offers no such prompt, nothing is shown.
+
+No setup: it happens when both are on the page.
 
 ## Catch errors from the first line
 

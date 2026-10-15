@@ -10,6 +10,7 @@
 
 import { safeStorage } from './context.ts';
 import { KEY_HEADER } from './transport.ts';
+import type { Category } from './types.ts';
 
 export type Verification = 'off' | 'flag' | 'require';
 export type ErrorKind = 'exception' | 'server_error' | 'network';
@@ -18,12 +19,17 @@ export interface KeyConfig {
   verification: Verification;
   errorPrompt: { enabled: boolean; on: ErrorKind[]; minHoursBetween: number };
   screenshots: boolean;
+  /** The kinds of report the key takes (§2), never empty; the first is the sheet's default. */
+  categories: Category[];
 }
+
+export const ALL_CATEGORIES: readonly Category[] = ['bug', 'idea', 'question', 'other'];
 
 export const DEFAULT_CONFIG: KeyConfig = Object.freeze({
   verification: 'off',
   errorPrompt: Object.freeze({ enabled: false, on: ['exception'] as ErrorKind[], minHoursBetween: 24 }),
   screenshots: true,
+  categories: Object.freeze([...ALL_CATEGORIES]) as Category[],
 }) as KeyConfig;
 
 /** How long an answer is good for before a long-lived page asks again (the door's `max-age`). */
@@ -43,7 +49,21 @@ export function parseConfig(raw: unknown): KeyConfig {
     verification: v === 'flag' || v === 'require' ? v : 'off',
     errorPrompt: { enabled: ep.enabled === true, on, minHoursBetween: hours },
     screenshots: o.screenshots !== false,
+    categories: parseCategories(o.categories),
   };
+}
+
+/** A non-empty subset of the four, in the key's order, without repeats; all four otherwise. */
+function parseCategories(raw: unknown): Category[] {
+  if (!Array.isArray(raw)) return [...ALL_CATEGORIES];
+  const out: Category[] = [];
+  for (const c of raw) if (ALL_CATEGORIES.includes(c as Category) && !out.includes(c as Category)) out.push(c as Category);
+  return out.length ? out : [...ALL_CATEGORIES];
+}
+
+/** The door's own sentence for a category the key does not take (403 `category_not_accepted`, §3.3). */
+export function categoryRefusal(categories: readonly Category[]): string {
+  return categories.length === 1 && categories[0] === 'bug' ? 'This app only takes problem reports.' : 'This app does not take that kind of report.';
 }
 
 /** `…/v1/feedback` → `…/v1/feedback/config`. */

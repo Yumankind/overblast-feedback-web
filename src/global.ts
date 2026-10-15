@@ -40,7 +40,8 @@ if (typeof window !== 'undefined') {
         ...(d.appVersion ? { appVersion: d.appVersion } : {}),
         ...(d.device === 'false' ? { device: false } : {}),
         trigger: {
-          button: d.button === 'false' ? false : { position: (d.position as 'bottom-right' | undefined) ?? 'bottom-right' },
+          // `data-button`: "false" never, "true" always, otherwise "auto" (hidden while the site's chat is on the page).
+          button: { position: (d.position as 'bottom-right' | undefined) ?? 'bottom-right', show: d.button === 'false' ? false : d.button === 'true' ? true : 'auto' },
           ...(d.shortcut ? { shortcut: d.shortcut === 'false' ? false : d.shortcut } : {}),
           shake: d.shake !== 'false',
         },
