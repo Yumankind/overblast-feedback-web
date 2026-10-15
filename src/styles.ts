@@ -75,6 +75,42 @@ button, input, textarea { font: inherit; color: inherit; }
 .fab.top-right { right: 16px; top: 16px; }
 .fab.top-left { left: 16px; top: 16px; }
 
+/* The error prompt (§3.6): a pill at the bottom, above the floating button when there is one. */
+.pill {
+  position: fixed;
+  z-index: 3;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  right: 16px;
+  max-width: calc(100vw - 32px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  border: 1px solid var(--ob-line);
+  border-radius: 999px;
+  background: var(--ob-bg);
+  color: var(--ob-fg);
+  box-shadow: var(--ob-shadow);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 1;
+  transform: none;
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+.pill.left { right: auto; left: 16px; }
+.pill.above { bottom: calc(68px + env(safe-area-inset-bottom, 0px)); }
+.pill.entering { opacity: 0; transform: translateY(8px); }
+.pill .btn { padding: 5px 12px; border-radius: 999px; border: 0; background: var(--ob-accent); color: var(--ob-accent-fg); font-weight: 600; cursor: pointer; }
+.pill .x { width: 26px; height: 26px; border: 0; border-radius: 50%; background: transparent; color: var(--ob-muted); cursor: pointer; font-size: 16px; line-height: 1; }
+.pill .x:hover { background: var(--ob-soft); }
+@media (max-width: 520px) {
+  .pill, .pill.left { left: 16px; right: 16px; justify-content: space-between; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill, .pill.entering { transition: none; transform: none; opacity: 1; }
+}
+
 .backdrop {
   position: fixed;
   inset: 0;

@@ -82,8 +82,8 @@ export interface FeedbackContext {
   trigger?: Trigger;
 }
 
-/** Contract §3.1. The web sends `button`, `shortcut`, `shake`, `api`, and `agent` when told to. */
-export type Trigger = 'shake' | 'button' | 'shortcut' | 'agent' | 'api' | 'relaunch';
+/** Contract §3.1. The web sends `button`, `shortcut`, `shake`, `api`, `error_prompt`, and `agent` when told to. */
+export type Trigger = 'shake' | 'button' | 'shortcut' | 'agent' | 'api' | 'relaunch' | 'error_prompt';
 
 /** Contract §3.5: the whole buffer, as a gzip NDJSON file. */
 export interface LogFileBody {
@@ -198,6 +198,10 @@ export interface Labels {
   shakeOffer: string;
   shakeEnable: string;
   shakeDismiss: string;
+  /** The error prompt (§3.6). */
+  promptText: string;
+  promptReport: string;
+  promptClose: string;
 }
 
 export interface InitOptions {
@@ -231,9 +235,19 @@ export interface InitOptions {
   /** The `fetch` used to send. Default the page's own (unwrapped) `fetch`. */
   fetch?: typeof fetch;
   /**
-   * Register this browser as a device and sign each report with its key (contract §8), so the door
-   * holds its per-device limits against a real key rather than a value anyone can make up. Default
-   * `true`. Where IndexedDB or WebCrypto is missing, reports go unsigned, as with `false`.
+   * The error prompt (§3.6), when the key's owner has switched it on. `false` keeps it off on this
+   * site whatever the key says; nothing here can turn it on.
+   */
+  errorPrompt?: boolean;
+  /**
+   * Hosts that count as this app's own for the error prompt, besides the page's origin: a 5xx or a
+   * failed request to one of these may prompt. `api.example.com`, `*.example.com`, or an origin.
+   */
+  appHosts?: string[];
+  /**
+   * Register this browser as a device and sign each report with its key (contract §8), when the
+   * key's verification is `flag` or `require`. Default `true`; `false` keeps it off whatever the key
+   * says. Where IndexedDB or WebCrypto is missing, reports go unsigned, as with `false`.
    */
   device?: boolean;
 }

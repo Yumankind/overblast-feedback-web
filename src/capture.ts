@@ -10,6 +10,7 @@
 
 import { LogBuffer } from './logbuffer.ts';
 import { MAX_LOG_MSG, cleanMessage, networkUrl } from './redact.ts';
+import type { ErrorKind } from './config.ts';
 import type { EarlyBuffer, LogLevel, NetworkEntry } from './types.ts';
 
 export { MAX_LOG_MSG, cleanMessage };
@@ -95,6 +96,21 @@ export interface CaptureOptions {
   /** Requests to this address are not recorded (the library's own reports). */
   ignoreUrl?: string;
   now?: () => number;
+  /**
+   * Whether a request went to the app's own hosts, for the error prompt's `server_error` and
+   * `network` (§3.6). Default: the page's own origin.
+   */
+  isAppUrl?: (url: string) => boolean;
+}
+
+/** Same origin as the page. */
+export function sameOrigin(url: string): boolean {
+  try {
+    if (typeof location === 'undefined') return false;
+    return new URL(url, location.href).origin === location.origin;
+  } catch {
+    return false;
+  }
 }
 
 type AnyFn = (...args: unknown[]) => unknown;
@@ -141,6 +157,8 @@ export class Capture {
   private readonly ignoreUrl: string | undefined;
   /** Set while the library's own code runs, so nothing it does is recorded. */
   quiet = 0;
+  /** Told when the page has an uncaught error, a 5xx from its own hosts, or a request that failed (§3.6). */
+  onSignal: ((kind: ErrorKind) => void) | null = null;
 
   private readonly opts: CaptureOptions;
 
@@ -267,6 +285,14 @@ export class Capture {
     }
   }
 
+  private signal(kind: ErrorKind): void {
+    try {
+      this.onSignal?.(kind);
+    } catch {
+      /* the prompt must never break recording */
+    }
+  }
+
   private installErrors(win: Window): void {
     const onError = (event: Event) => {
       try {
@@ -274,6 +300,8 @@ export class Capture {
           const where = event.filename ? ` (${networkUrl(event.filename)}:${event.lineno}:${event.colno})` : '';
           const text = event.error !== undefined && event.error !== null ? formatValue(event.error) : event.message;
           this.log('error', `${text || 'Script error.'}${where}`, 'onerror');
+          // Uncaught by definition: an error the page caught never reaches this event.
+          this.signal('exception');
           return;
         }
         // A resource that failed to load (an <img>, a <script>): the event does not bubble, so it is
@@ -290,6 +318,7 @@ export class Capture {
     const onRejection = (event: PromiseRejectionEvent) => {
       try {
         this.log('error', `Unhandled rejection: ${formatValue(event.reason)}`, 'unhandledrejection');
+        this.signal('exception');
       } catch {
         /* as above */
       }
@@ -302,12 +331,15 @@ export class Capture {
     });
   }
 
-  private record(method: string, url: string, status: number, start: number): void {
+  /** `failed`: the request never answered (a network error or a timeout, not an abort). */
+  private record(method: string, url: string, status: number, start: number, failed = false): void {
     if (this.quiet || this.pausedFlag) return;
     try {
       const clean = networkUrl(url);
-      // The door and its device doors (`…/devices`, `…/devices/challenge`) are the library's own.
+      // The door and its device doors (`…/devices`, `…/devices/challenge`) are the library's own,
+      // and never count towards the error prompt either.
       if (this.ignoreUrl && (clean === this.ignoreUrl || clean.startsWith(`${this.ignoreUrl.replace(/\/+$/, '')}/`))) return;
+      if ((failed || (status >= 500 && status <= 599)) && (this.opts.isAppUrl ?? sameOrigin)(url)) this.signal(failed ? 'network' : 'server_error');
       this.network.push({
         t: start,
         method: (method || 'GET').toUpperCase().slice(0, 16),
@@ -352,7 +384,8 @@ export class Capture {
             return response;
           },
           (error: unknown) => {
-            capture.record(method, url, 0, start);
+            // An abort is the page's own decision, not a failure.
+            capture.record(method, url, 0, start, (error as { name?: unknown } | null)?.name !== 'AbortError');
             throw error;
           },
         );
@@ -385,17 +418,25 @@ export class Capture {
         const info = live() && !capture.quiet ? meta.get(this) : undefined;
         if (info) {
           const start = capture.now();
+          let failed = false;
+          const fail = () => {
+            failed = true;
+          };
           const done = () => {
             this.removeEventListener('loadend', done);
+            this.removeEventListener('error', fail);
+            this.removeEventListener('timeout', fail);
             let status = 0;
             try {
               status = this.status;
             } catch {
               /* status unreadable: never answered */
             }
-            capture.record(info.method, info.url, status, start);
+            capture.record(info.method, info.url, status, start, failed);
           };
           try {
+            this.addEventListener('error', fail);
+            this.addEventListener('timeout', fail);
             this.addEventListener('loadend', done);
           } catch {
             /* unrecorded */

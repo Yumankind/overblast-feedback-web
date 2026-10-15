@@ -44,4 +44,7 @@ export const DEFAULT_LABELS: Labels = {
   shakeOffer: 'Shake your phone to send feedback next time.',
   shakeEnable: 'Turn on',
   shakeDismiss: 'No thanks',
+  promptText: 'Something may have gone wrong. Tell us?',
+  promptReport: 'Report',
+  promptClose: 'Close',
 };

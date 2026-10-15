@@ -7,7 +7,9 @@
  * UI methods do nothing.
  */
 
-import { Capture } from './capture.ts';
+import { Capture, sameOrigin } from './capture.ts';
+import { ConfigClient, DEFAULT_CONFIG, type KeyConfig } from './config.ts';
+import { ErrorPrompt, textFieldFocused, type PromptClock } from './prompt.ts';
 import { collectContext, safeStorage } from './context.ts';
 import { DeviceClient } from './device.ts';
 import { DEFAULT_PRIVATE_SELECTOR, describeElement } from './element.ts';
@@ -70,12 +72,22 @@ export function init(options: InitOptions): FeedbackInstance {
   let destroyed = false;
   const cleanups: Array<() => void> = [];
 
+  const isAppUrl = appUrlMatcher(options.appHosts);
   const capture = new Capture({
     console: options.captureConsole !== false,
     network: options.captureNetwork !== false,
     ignoreUrl: endpoint,
+    isAppUrl,
   });
   if (win) capture.install(win);
+
+  // ── What the key's owner switched on (§2.1) ────────────────────────────────────────────────
+  // Read in idle time after init, never without a DOM. Until there is an answer (now, or kept from
+  // an earlier visit) everything is as the defaults: no device, no error prompt, screenshots offered.
+  let config: ConfigClient | null = null;
+  const keyConfig = (): KeyConfig => config?.current ?? DEFAULT_CONFIG;
+  /** Set when the door said `device_required` although the kept answer said otherwise. */
+  let deviceDemanded = false;
 
   const reporter = (): Reporter | undefined => {
     if (reporterOverride !== undefined) return reporterOverride ?? undefined;
@@ -94,10 +106,11 @@ export function init(options: InitOptions): FeedbackInstance {
   // ── The device (contract §8) ───────────────────────────────────────────────────────────────
   // Made on first use, never at init and never without a DOM: server rendering must not reach
   // IndexedDB, and a page that never reports never makes a key.
-  const deviceWanted = options.device !== false && hasDom;
+  // `device: false` wins; otherwise only when the key asks for devices at all (`flag`, `require`).
+  const deviceWanted = (): boolean => options.device !== false && hasDom && (deviceDemanded || keyConfig().verification !== 'off');
   let device: DeviceClient | null = null;
   const getDevice = (): DeviceClient | null => {
-    if (!deviceWanted || destroyed) return null;
+    if (!deviceWanted() || destroyed) return null;
     if (!device) {
       try {
         device = new DeviceClient({ endpoint, key, fetch: sendFetch });
@@ -110,7 +123,7 @@ export function init(options: InitOptions): FeedbackInstance {
   let idleHandle: { cancel: () => void } | null = null;
   /** Register in idle time once the sheet is open, so it is usually done before Send is pressed. */
   const registerWhenIdle = () => {
-    if (!deviceWanted || destroyed || idleHandle) return;
+    if (!deviceWanted() || destroyed || idleHandle) return;
     const run = () => {
       idleHandle = null;
       getDevice()?.start();
@@ -161,7 +174,19 @@ export function init(options: InitOptions): FeedbackInstance {
     });
     // The whole buffer as a file (§3.5), in the room the rest of the body leaves.
     await attachLogFile(body, lines);
-    return sendReport(sendFetch(), endpoint, key, body, { device: getDevice() });
+    const dev = getDevice();
+    try {
+      return await sendReport(sendFetch(), endpoint, key, body, { device: dev });
+    } catch (err) {
+      // The kept answer was stale: the key requires a device now. Register and send once more.
+      if (!dev && err instanceof FeedbackError && err.code === 'device_required' && options.device !== false && hasDom) {
+        deviceDemanded = true;
+        void config?.refresh();
+        const now = getDevice();
+        if (now) return sendReport(sendFetch(), endpoint, key, body, { device: now });
+      }
+      throw err;
+    }
   }
 
   async function report(input: ReportInput): Promise<ReportResult> {
@@ -175,7 +200,9 @@ export function init(options: InitOptions): FeedbackInstance {
       element = describeElement(selected, privateSelector);
     }
     let shot: Shot | null = null;
-    if (input.screenshot === true) shot = await screenshotFor(selected);
+    const shotsAllowed = keyConfig().screenshots;
+    if (!shotsAllowed) shot = null;
+    else if (input.screenshot === true) shot = await screenshotFor(selected);
     else if (input.screenshot && typeof (input.screenshot as Blob).arrayBuffer === 'function' && doc) {
       shot = await finishHookBlob(doc, input.screenshot as Blob, planShot(doc, privateSelector, selected));
     }
@@ -224,8 +251,11 @@ export function init(options: InitOptions): FeedbackInstance {
       needsEmail: () => !reporter()?.email,
       takeScreenshot: screenshotFor,
       submit: reportFromSheet,
+      screenshotsAllowed: () => keyConfig().screenshots,
       onOpen: () => {
         capture.paused = true;
+        prompt?.sheetOpened();
+        void config?.maybeRefresh();
         registerWhenIdle();
       },
       onClose: () => {
@@ -279,6 +309,71 @@ export function init(options: InitOptions): FeedbackInstance {
     }
   }
 
+  // ── The error prompt (§3.6) ──────────────────────────────────────────────────────────────────
+
+  // The prompt's clock and timers. Not an option: the tests hand in a fake clock this way, so every
+  // rule can be driven without waiting for it.
+  const clock = (options as { _promptClock?: PromptClock })._promptClock ?? {
+    now: () => Date.now(),
+    setTimeout: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
+    clearTimeout: (h: unknown) => clearTimeout(h as ReturnType<typeof setTimeout>),
+  };
+  const startedAt = clock.now();
+  const prompt: ErrorPrompt | null =
+    doc && options.errorPrompt !== false
+      ? new ErrorPrompt({
+          now: clock.now,
+          setTimeout: clock.setTimeout,
+          clearTimeout: clock.clearTimeout,
+          config: keyConfig,
+          locallyOff: false,
+          startedAt,
+          isSheetOpen: () => !!ui?.isOpen || !!ui?.isPicking,
+          isTyping: () => textFieldFocused(doc),
+          isVisible: () => doc.visibilityState !== 'hidden',
+          show: (h) => ui?.showPrompt(h),
+          hide: () => ui?.hidePrompt(),
+          openSheet: () => ui?.open('error_prompt', { category: 'bug' }),
+          log: (msg) => capture.log('info', msg, 'overblast'),
+          storage: safeStorage,
+        })
+      : null;
+  if (prompt) {
+    capture.onSignal = (kind) => {
+      // A long-lived page asks the door again (at most every five minutes) when it has a reason to.
+      void config?.maybeRefresh();
+      prompt.signal(kind);
+    };
+    cleanups.push(() => prompt.destroy());
+  }
+
+  if (doc) {
+    config = new ConfigClient({ endpoint, key, fetch: sendFetch });
+    const cfg = config;
+    const ask = () => {
+      if (!destroyed) void cfg.refresh();
+    };
+    const w = win as (Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number; cancelIdleCallback?: (h: number) => void }) | undefined;
+    if (w && typeof w.requestIdleCallback === 'function') {
+      const h = w.requestIdleCallback(ask, { timeout: 2000 });
+      cleanups.push(() => w.cancelIdleCallback?.(h));
+    } else {
+      const h = setTimeout(ask, 200);
+      cleanups.push(() => clearTimeout(h));
+    }
+    const onVisible = () => {
+      if (doc.visibilityState === 'visible') void cfg.maybeRefresh();
+    };
+    doc.addEventListener('visibilitychange', onVisible);
+    cleanups.push(() => doc.removeEventListener('visibilitychange', onVisible));
+    // A key switched to `flag` or `require` while the sheet is open: register now.
+    cleanups.push(
+      cfg.onChange(() => {
+        if (ui?.isOpen) registerWhenIdle();
+      }),
+    );
+  }
+
   const instance: FeedbackInstance = {
     open: (o) => ui?.open(o?.trigger === 'agent' ? 'agent' : 'api'),
     close: () => ui?.close(),
@@ -308,4 +403,33 @@ export function init(options: InitOptions): FeedbackInstance {
   };
   current = instance;
   return instance;
+}
+
+/**
+ * The app's own hosts, for the error prompt's `server_error` and `network`: the page's origin, and
+ * the hosts the integrator lists (`api.example.com`, `*.example.com`, or a full origin).
+ */
+export function appUrlMatcher(hosts: string[] | undefined): (url: string) => boolean {
+  const list = (hosts ?? [])
+    .map((h) => {
+      const v = String(h).trim().toLowerCase();
+      if (!v) return '';
+      try {
+        return v.includes('://') ? new URL(v).host : v.replace(/\/.*$/, '');
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean);
+  return (url: string) => {
+    if (sameOrigin(url)) return true;
+    if (!list.length) return false;
+    let host: string;
+    try {
+      host = new URL(url, typeof location !== 'undefined' ? location.href : undefined).host.toLowerCase();
+    } catch {
+      return false;
+    }
+    return list.some((h) => (h.startsWith('*.') ? host.endsWith(h.slice(1)) && host.length > h.length - 1 : host === h));
+  };
 }

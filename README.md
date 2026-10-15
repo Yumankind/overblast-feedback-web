@@ -10,7 +10,7 @@ when they chose to attach one.
 npm i @overblast/feedback@^0.2.0
 ```
 
-Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 27 KB
+Zero runtime dependencies. ESM and types, plus a single-file build for a `<script>` tag. About 31 KB
 gzipped, and an optional 1.5 KB recorder for `<head>` ([below](#catch-errors-from-the-first-line)).
 
 ---
@@ -83,7 +83,9 @@ init({
   captureConsole: true,
   captureNetwork: true,
   onSent: ({ id, taskId, conversationId }) => {},
-  device: true,                                     // register this browser and sign reports (see below)
+  device: true,                                     // false: never register, whatever the key says
+  errorPrompt: true,                                // false: never show the error prompt here
+  appHosts: ['api.example.com'],                    // your API's hosts, for the error prompt
 });
 ```
 
@@ -99,7 +101,19 @@ init({
 | `labels` | Any of the words the library shows. The full list and the English defaults are exported as `DEFAULT_LABELS`. |
 | `captureConsole`, `captureNetwork` | Turn the recording of console lines or of requests off. |
 | `fetch` | The `fetch` used to send the report. Defaults to your page's own, before the library wrapped it. |
-| `device` | Register this browser as a device and sign every report with its key. Default `true`. See [Device verification](#device-verification). |
+| `device` | `false` keeps device registration off on this site, whatever the key says. See [Device verification](#device-verification). |
+| `errorPrompt` | `false` keeps the [error prompt](#the-error-prompt) off on this site, whatever the key says. |
+| `appHosts` | Hosts besides the page's own whose 5xx answers and failed requests count for the error prompt: `api.example.com`, `*.example.com`, or an origin. |
+
+### Settings that live on the key
+
+Three things are switched on the key in the Overblast console rather than in code, so they can be
+changed without a release: device verification, the error prompt, and whether screenshots are
+offered. The library reads them in idle time after `init` (`GET …/v1/feedback/config`), keeps the
+answer in `localStorage` with its ETag, asks again at most every five minutes on a long-lived page,
+and uses the kept answer when offline. Until it has ever had an answer it behaves as the defaults:
+no device registration, no error prompt, screenshots offered. Your own options can only turn these
+off, never on.
 
 ## The instance
 
@@ -228,6 +242,27 @@ remembers the yes under `localStorage` `ob-feedback-shake`, and a "No thanks" th
 If you would rather ask from your own settings screen, call `feedback.enableShake()` from that
 button's click handler.
 
+## The error prompt
+
+When the key's owner switches it on, the library may offer a report after something goes wrong: a
+small pill at the bottom of the page, "Something may have gone wrong. Tell us?", with **Report** and
+a close button, in the page's light or dark scheme. It is not a dialog, and it keeps out of the way:
+
+- **What counts**, among the kinds the key lists: an uncaught error or unhandled rejection (not one
+  your code caught and logged); a 5xx answer from the page's own origin or your `appHosts` (not a
+  4xx, which is usually the person's own input, and not another site's); a request to those hosts
+  that never answered (an abort is not a failure). The library's own requests never count.
+- **When**: at least 10 seconds after `init`; not while a text field has focus (it waits up to 30
+  seconds, then gives up); not while the sheet is open; only while the page is visible.
+- **How often**: once per page, at most once per the key's `minHoursBetween` on this browser, and
+  after two closes without reporting, not again for seven days. Errors a second apart are one.
+- **How it behaves**: it fades in (not with reduced motion), stays about 8 seconds, longer while the
+  pointer is over it, and screen readers announce it politely. **Report** opens the sheet as a bug,
+  with `trigger: error_prompt`, so the error is among the lines just before. Each prompt is a line in
+  the log (`error prompt shown`, `dismissed`), so a report says whether the person was prompted.
+
+Labels: `promptText`, `promptReport`, `promptClose`.
+
 ## Catch errors from the first line
 
 The library records from the moment `init` runs. Errors thrown before that (a script that failed in
@@ -287,9 +322,10 @@ nobody to answer, and no conversation.
 
 ## Device verification
 
-No setup on your side: it is on by default, and the worker does the rest.
+No code on your side: it follows the key's verification setting (`off` by default; `flag` or
+`require` turn it on, in the console's Advanced section), and the worker does the rest.
 
-The first time a report is about to be sent (in idle time once the sheet opens, or on the first
+When the key has it on, the first time a report is about to be sent (in idle time once the sheet opens, or on the first
 `report()` call), the library makes an ECDSA P-256 key pair with WebCrypto, **non-extractable**, so
 the private half never leaves the browser's key store, not even to this library, and keeps it in
 IndexedDB. It registers the public half with the door once: it asks for a challenge, solves a small

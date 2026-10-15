@@ -41,6 +41,8 @@ export interface UiDeps {
   onOpen?: (() => void) | undefined;
   /** Called when the sheet closes (collection resumes). */
   onClose?: (() => void) | undefined;
+  /** False when the key has screenshots off (§2.1): the sheet does not offer one. */
+  screenshotsAllowed?: (() => boolean) | undefined;
   /** Called inside the button's click handler, which is a user gesture (iOS motion permission). */
   onButtonGesture(): void;
   shake: {
@@ -128,11 +130,12 @@ export class FeedbackUi {
 
   // ── The sheet ───────────────────────────────────────────────────────────────────────────────
 
-  open(trigger: Trigger = 'api'): void {
+  open(trigger: Trigger = 'api', preset: { category?: Category } = {}): void {
     if (this.destroyed || this.picking) return;
     if (!this.backdrop) this.buildSheet();
     const backdrop = this.backdrop!;
     if (!backdrop.hidden) return;
+    this.hidePrompt();
     this.values.openedAt = Date.now();
     this.values.trigger = trigger;
     this.returnFocus = this.doc.activeElement;
@@ -148,6 +151,7 @@ export class FeedbackUi {
         this.setStatus(this.deps.labels.draftRestored, 'info');
       }
     }
+    if (preset.category) this.values.category = preset.category;
     this.render();
     backdrop.hidden = false;
     this.session = true;
@@ -216,7 +220,7 @@ export class FeedbackUi {
               <span class="hint" id="ob-email-hint">${esc(L.emailHint)}</span>
               <span class="err" id="ob-email-err" data-err="email" hidden></span>
             </label>
-            <div>
+            <div data-part="shot-row">
               <label class="check"><input type="checkbox" name="screenshot"><span>${esc(L.includeScreenshot)}</span></label>
               <p class="hint" data-part="shot-note" hidden></p>
               <div class="thumb" data-part="thumb" hidden>
@@ -350,6 +354,10 @@ export class FeedbackUi {
       const text = this.q<HTMLElement>('[data-part="selected-text"]');
       if (text && v.anchor) text.textContent = v.anchor.label ? `${v.anchor.tag} · ${v.anchor.label}` : v.anchor.selector;
     }
+    const shotsAllowed = this.deps.screenshotsAllowed?.() !== false;
+    if (!shotsAllowed && v.shot) this.setShot(null);
+    const shotRow = this.q<HTMLElement>('[data-part="shot-row"]');
+    if (shotRow) shotRow.hidden = !shotsAllowed;
     const box = this.q<HTMLInputElement>('input[name="screenshot"]');
     if (box) box.checked = !!v.shot;
     const thumb = this.q<HTMLElement>('[data-part="thumb"]');
@@ -653,6 +661,45 @@ export class FeedbackUi {
     });
   }
 
+  // ── The error prompt's pill (§3.6) ──────────────────────────────────────────────────────────
+
+  private pill: HTMLDivElement | null = null;
+
+  get promptShowing(): boolean {
+    return !!this.pill;
+  }
+
+  /** Put up the pill. `role=status` makes screen readers announce it politely, not assertively. */
+  showPrompt(h: { report(): void; close(): void; hold(inside: boolean): void }): void {
+    if (this.destroyed) return;
+    this.hidePrompt();
+    const L = this.deps.labels;
+    const pill = this.doc.createElement('div');
+    const pos = this.deps.position;
+    pill.className = `pill entering${pos === 'bottom-left' ? ' left' : ''}${pos === 'bottom-left' || pos === 'bottom-right' ? ' above' : ''}`;
+    pill.setAttribute('role', 'status');
+    pill.setAttribute('aria-live', 'polite');
+    pill.innerHTML = `<span>${esc(L.promptText)}</span><button type="button" class="btn" data-act="prompt-report">${esc(L.promptReport)}</button><button type="button" class="x" data-act="prompt-close" aria-label="${esc(L.promptClose)}">×</button>`;
+    pill.addEventListener('click', (e) => {
+      const act = (e.target as Element | null)?.closest?.('[data-act]')?.getAttribute('data-act');
+      if (act === 'prompt-report') h.report();
+      else if (act === 'prompt-close') h.close();
+    });
+    pill.addEventListener('mouseenter', () => h.hold(true));
+    pill.addEventListener('mouseleave', () => h.hold(false));
+    pill.addEventListener('focusin', () => h.hold(true));
+    pill.addEventListener('focusout', () => h.hold(false));
+    this.root.appendChild(pill);
+    this.pill = pill;
+    // Fade in on the next frame (no animation with reduced motion: the stylesheet says so).
+    void nextFrame().then(() => pill.classList.remove('entering'));
+  }
+
+  hidePrompt(): void {
+    this.pill?.remove();
+    this.pill = null;
+  }
+
   private endSession(): void {
     if (!this.session) return;
     this.session = false;
@@ -666,6 +713,7 @@ export class FeedbackUi {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    this.hidePrompt();
     this.endSession();
     this.picking?.finish(null);
     this.setShot(null);

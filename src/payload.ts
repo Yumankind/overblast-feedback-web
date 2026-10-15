@@ -16,7 +16,7 @@ export const MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024;
 export const MAX_EXTRA_KEYS = 20;
 export const CATEGORIES: readonly Category[] = ['bug', 'idea', 'question', 'other'];
 const LEVELS = new Set(['debug', 'info', 'warn', 'error']);
-const TRIGGERS: readonly Trigger[] = ['shake', 'button', 'shortcut', 'agent', 'api', 'relaunch'];
+const TRIGGERS: readonly Trigger[] = ['shake', 'button', 'shortcut', 'agent', 'api', 'relaunch', 'error_prompt'];
 
 /** The top-level fields contract §3.1 names. Anything else is a bug in this file. */
 export const BODY_FIELDS = ['v', 'message', 'category', 'reporter', 'context', 'element', 'screenshot', 'logs', 'logFile', 'network'] as const;

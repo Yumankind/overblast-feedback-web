@@ -8,7 +8,7 @@ import { createHash, randomBytes } from 'node:crypto';
 
 export interface DoorCall {
   url: string;
-  kind: 'challenge' | 'register' | 'report';
+  kind: 'challenge' | 'register' | 'report' | 'config';
   headers: Record<string, string>;
   bytes: Uint8Array;
   json: Record<string, unknown>;
@@ -18,6 +18,8 @@ type Answer = Response | Promise<Response> | (() => Response | Promise<Response>
 
 export interface DoorOptions {
   difficulty?: number;
+  /** What `GET …/config` answers (§2.1). Default `{ verification: 'flag' }`. */
+  config?: Record<string, unknown>;
 }
 
 export function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
@@ -45,7 +47,7 @@ export function makeDoor(opts: DoorOptions = {}) {
   const calls: DoorCall[] = [];
   const challenges = new Map<string, { salt: string; difficulty: number; used: boolean }>();
   const devices = new Map<string, CryptoKey>();
-  const overrides: Record<DoorCall['kind'], Answer[]> = { challenge: [], register: [], report: [] };
+  const overrides: Record<DoorCall['kind'], Answer[]> = { challenge: [], register: [], report: [], config: [] };
   let n = 0;
   const verified: Array<{ deviceId: string; ok: boolean }> = [];
 
@@ -62,11 +64,14 @@ export function makeDoor(opts: DoorOptions = {}) {
     } catch {
       /* not JSON */
     }
-    const kind: DoorCall['kind'] = url.endsWith('/devices/challenge') ? 'challenge' : url.endsWith('/devices') ? 'register' : 'report';
+    const kind: DoorCall['kind'] = url.endsWith('/devices/challenge') ? 'challenge' : url.endsWith('/devices') ? 'register' : url.endsWith('/config') ? 'config' : 'report';
     calls.push({ url, kind, headers, bytes, json: parsed });
     const override = overrides[kind].shift();
     if (override !== undefined) return answer(override);
 
+    if (kind === 'config') {
+      return json(200, opts.config ?? { verification: 'flag', errorPrompt: { enabled: false, on: ['exception'], minHoursBetween: 24 }, screenshots: true }, { ETag: '"c1"' });
+    }
     if (kind === 'challenge') {
       const id = `ch_${++n}`;
       const salt = randomBytes(16).toString('base64url');

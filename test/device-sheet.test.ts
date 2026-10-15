@@ -39,12 +39,12 @@ test('nothing at init; the sheet registers in idle time; Send is signed', async 
   const door = shared;
   fb = init({ key: 'obfk_sheet', fetch: door.fetch });
   await wait(400);
-  assert.equal(door.calls.length, 0, 'no key, no challenge at init');
+  assert.deepEqual(door.calls.map((c) => c.kind), ['config'], 'the key\'s settings read in idle time; no key, no challenge');
   assert.equal(await fb.deviceLevel(), 'none');
 
   inSheet<HTMLButtonElement>('.fab')!.click();
   await until(async () => (await fb!.deviceLevel()) === 'registered');
-  assert.deepEqual(door.calls.map((c) => c.kind), ['challenge', 'register']);
+  assert.deepEqual(door.calls.map((c) => c.kind), ['config', 'challenge', 'register']);
 
   const textarea = inSheet<HTMLTextAreaElement>('textarea')!;
   textarea.value = 'Signed from the sheet';
@@ -67,7 +67,7 @@ test('a later instance on the same page load reuses the kept device', async () =
   fb = init({ key: 'obfk_sheet', fetch: door.fetch });
   assert.equal(await fb.deviceLevel(), 'registered', 'kept in IndexedDB by the test before');
   await fb.report({ message: 'again' });
-  const calls = door.calls.slice(before);
+  const calls = door.calls.slice(before).filter((c) => c.kind !== 'config');
   assert.deepEqual(calls.map((c) => c.kind), ['report']);
   assert.equal(calls[0]!.headers[DEVICE_HEADER], door.reports()[0]!.headers[DEVICE_HEADER]);
   assert.equal(door.verified.at(-1)!.ok, true);
@@ -77,8 +77,9 @@ test('report() without the sheet registers on first use', async () => {
   page('<main></main>');
   const door = makeDoor();
   fb = init({ key: 'obfk_programmatic', fetch: door.fetch });
+  await wait(400); // the key's settings, read in idle time, say `flag`
   await fb.report({ message: 'from code' });
-  assert.deepEqual(door.calls.map((c) => c.kind), ['challenge', 'register', 'report']);
+  assert.deepEqual(door.calls.map((c) => c.kind), ['config', 'challenge', 'register', 'report']);
   assert.ok(door.reports()[0]!.headers[DEVICE_HEADER]);
 });
 
@@ -89,7 +90,7 @@ test('device: false: never a device door, never a signature', async () => {
   inSheet<HTMLButtonElement>('.fab')!.click();
   await wait(500);
   await fb.report({ message: 'unsigned' });
-  assert.deepEqual(door.calls.map((c) => c.kind), ['report']);
+  assert.deepEqual(door.calls.filter((c) => c.kind !== 'config').map((c) => c.kind), ['report']);
   assert.equal(door.reports()[0]!.headers[DEVICE_HEADER], undefined);
   assert.equal(await fb.deviceLevel(), 'none');
 });
